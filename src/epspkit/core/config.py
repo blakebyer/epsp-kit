@@ -1,28 +1,46 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Literal, Any, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from epspkit.core.context import RecordingContext
+from typing import Any, Literal, Sequence
+
 
 @dataclass
 class SmoothingConfig:
-    method: Literal["none", "moving_average", "savgol", "butter_lowpass"] = "moving_average"
-    window_size: int | None = None # for moving average and savgol
-    polyorder: int | None = None  # for savgol
-    cutoff: float | None = None  # Hz, for butter
-    fs: float | None = None  # for butter
-    order: int = 3  # for butter
+    """
+    Configuration for optional trace smoothing.
+
+    Defaults:
+      - method="none" → no smoothing unless explicitly enabled
+      - window_size / polyorder chosen to be reasonable for EPSP traces
+      - cutoff/order for a generic low-pass if you want Butterworth
+    """
+    method: Literal["none", "moving_average", "savgol", "butter_lowpass"] = "none"
+    window_size: int = 11      # used by moving_average and savgol
+    polyorder: int = 3         # only used by savgol
+    cutoff: float = 2000.0     # Hz, for butter_lowpass
+    order: int = 3             # filter order for butter_lowpass
+
 
 @dataclass
 class FeatureConfig:
+    """
+    Per-feature configuration.
+
+    name    : identifier for the feature (e.g., "fv", "epsp", "ps")
+    params  : arbitrary feature-specific settings
+    smoothing : optional smoothing policy for this feature
+    """
     name: str
     params: dict[str, Any] = field(default_factory=dict)
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
 
+
 @dataclass
 class IOConfig:
+    """
+    I/O and basic acquisition configuration for a pipeline run.
+    """
     input_paths: Sequence[str] = field(default_factory=list)
     output_path: Path | None = None
     repnum: int = 3
@@ -30,35 +48,16 @@ class IOConfig:
     write_results: bool = True
     write_plots: bool = True
 
+
 @dataclass
 class PipelineConfig:
+    """
+    Top-level configuration for an analysis pipeline.
+
+    io              : input/output and acquisition parameters
+    features        : list of feature configs to run
+    global_smoothing: default smoothing policy, unless overridden per feature
+    """
     io: IOConfig = field(default_factory=IOConfig)
     features: list[FeatureConfig] = field(default_factory=list)
     global_smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
-
-class Feature(ABC):
-    """
-    Base class for all EPSP-kit analyzers/features (FV, EPSP, PS, etc.)
-
-    Subclasses should:
-      - implement `run(context)`
-      - use `self.config.params` for their custom settings
-      - use `self.get_smoothing(global_cfg)` to determine smoothing policy
-    """
-    def __init__(self, config: FeatureConfig):
-        self.config = config
-        self.name = config.name
-
-    @abstractmethod
-    def run(self, context: RecordingContext) -> RecordingContext:
-        """Run the feature analysis on the given recording context."""
-
-    def get_smoothing(self, global_smoothing: SmoothingConfig) -> SmoothingConfig:
-        """
-        Determine effective smoothing:
-        - If the feature defines its own smoothing → use that
-        - Else → use global smoothing
-        """
-        if self.config.smoothing is not None:
-            return self.config.smoothing
-        return global_smoothing
