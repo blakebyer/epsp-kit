@@ -61,3 +61,16 @@ class PipelineConfig:
     io: IOConfig = field(default_factory=IOConfig)
     features: list[FeatureConfig] = field(default_factory=list)
     global_smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
+
+@dataclass
+class VizConfig:
+    """
+    Configuration for visualization settings.
+    """
+    name: str
+    stim_intensities: Sequence[float] = field(default_factory=list)
+    rc_params: dict[str, Any] = field(default_factory=dict)
+    style: str = "default" # Matplotlib style
+    color_map: str = "viridis"
+    smooth: bool = False
+    smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)

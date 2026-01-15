@@ -8,9 +8,9 @@ from epspkit.core.config import SmoothingConfig, VizConfig
 from epspkit.core.context import RecordingContext
 from epspkit.viz.base import Plot
 
-class DerivativePlot(Plot):
+class SweepPlot(Plot):
     """
-    Plots averaged sweeps and their derivatives with optional smoothing.
+    Plots averaged sweeps with optional smoothing.
     """
     def __init__(self, config: VizConfig, effective_smoothing: SmoothingConfig | None = None):
         super().__init__(config, effective_smoothing)

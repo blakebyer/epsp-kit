@@ -4,15 +4,15 @@ Module for detecting and removing stimulation artifacts.
 from __future__ import annotations
 from epspkit.features.base import Feature
 from epspkit.core.context import RecordingContext
-from epspkit.core.config import FeatureConfig, SmoothingConfig
+from epspkit.core.config import FeatureConfig
 from epspkit.core import math as emath
 import pandas as pd
 import numpy as np
 from typing import Optional
 
 class StimArtifactFeature(Feature):
-    def __init__(self, config: FeatureConfig, effective_smoothing: SmoothingConfig | None = None):
-        super().__init__(config, effective_smoothing)
+    def __init__(self, config: FeatureConfig):
+        super().__init__(config)
         params = self.config.params
         self.window_ms : float = params.get("window_ms", (0.0,1.25))  # ms
 
