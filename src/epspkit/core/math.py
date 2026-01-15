@@ -38,3 +38,15 @@ def linear_fit(x: np.ndarray, y: np.ndarray):
     ss_tot = np.sum((y - y.mean()) ** 2)
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
     return float(m), float(b), float(r2)
+
+def find_peaks(y: np.ndarray, **kwargs):
+    return find_peaks(y, **kwargs)
+
+def peak_prominences(y: np.ndarray, peaks: np.ndarray):
+    return peak_prominences(y, peaks)
+
+def to_samples(time_ms: float, fs: float):
+    return int(round((time_ms / 1000.0) * fs))
+
+def to_ms(samples: int, fs: float):
+    return (samples / fs) * 1000.0
