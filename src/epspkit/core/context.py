@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from epspkit.core.config import PipelineConfig
-
+from epspkit.io.read_write import load_abf_to_context
 
 @dataclass
 class RecordingContext:
@@ -44,3 +44,27 @@ class RecordingContext:
     def get_result(self, feature_name: str) -> dict[str, Any] | None:
         """Retrieve results for a given feature, or None if missing."""
         return self.results.get(feature_name, None)
+    
+    def from_abf(self, file_path: str, stim_intensities: list[float], repnum: int) -> RecordingContext:
+        """
+        Load an ABF file and convert it to a RecordingContext.
+
+        Parameters
+        ----------
+        file_path
+            Path to the ABF file.
+        stim_intensities
+            List of stimulus intensities.
+        repnum
+            Repetition number.
+        Returns
+        -------
+        RecordingContext
+            RecordingContext object containing the data from the ABF file.
+        """
+
+        return load_abf_to_context(
+            file_path=file_path,
+            stim_intensities=stim_intensities,
+            repnum=repnum
+        )

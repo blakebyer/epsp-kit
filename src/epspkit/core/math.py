@@ -1,5 +1,11 @@
 import numpy as np
-from scipy.signal import savgol_filter, butter, filtfilt, find_peaks, peak_prominences
+from scipy.signal import (
+    savgol_filter,
+    butter,
+    filtfilt,
+    find_peaks as _find_peaks,
+    peak_prominences as _peak_prominences,
+)
 from scipy.ndimage import uniform_filter1d
 
 
@@ -40,10 +46,10 @@ def linear_fit(x: np.ndarray, y: np.ndarray):
     return float(m), float(b), float(r2)
 
 def find_peaks(y: np.ndarray, **kwargs):
-    return find_peaks(y, **kwargs)
+    return _find_peaks(y, **kwargs)
 
 def peak_prominences(y: np.ndarray, peaks: np.ndarray):
-    return peak_prominences(y, peaks)
+    return _peak_prominences(y, peaks)
 
 def to_samples(time_ms: float, fs: float):
     return int(round((time_ms / 1000.0) * fs))

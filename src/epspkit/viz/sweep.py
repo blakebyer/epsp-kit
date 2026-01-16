@@ -26,36 +26,38 @@ class SweepPlot(Plot):
 
         abf_df = context.averaged
         fs = context.fs
-        plt.style.use(self.style)
-        plt.rcParams.update(self.rc_params)
-        fig, ax = plt.subplots()
 
-        stim_order = list(self.stim_intensities) or list(pd.unique(abf_df["stim_intensity"]))
-        cmap = plt.get_cmap(self.color_map)
-        n_colors = max(len(stim_order), 1)
+        with plt.style.context(self.style):
+            with plt.rc_context(self.rc_params):
 
-        for idx, stim in enumerate(stim_order):
-            g = abf_df.loc[abf_df["stim_intensity"] == stim]
-            if g.empty:
-                continue
-            color = cmap(idx / (n_colors - 1)) if n_colors > 1 else cmap(0.0)
+                fig, ax = plt.subplots()
 
-            if "mean" not in g.columns:
-                raise ValueError("Expected 'mean' column in averaged data.")
+                stim_order = list(self.stim_intensities) or list(pd.unique(abf_df["stim_intensity"]))
+                cmap = plt.get_cmap(self.color_map)
+                n_colors = max(len(stim_order), 1)
 
-            x = g["time"].to_numpy()
-            y = g["mean"].to_numpy()
+                for idx, stim in enumerate(stim_order):
+                    g = abf_df.loc[abf_df["stim_intensity"] == stim]
+                    if g.empty:
+                        continue
+                    color = cmap(idx / (n_colors - 1)) if n_colors > 1 else cmap(0.0)
 
-            if self.smooth:
-                y = self.apply_smoothing(y, fs=fs)
+                    if "mean" not in g.columns:
+                        raise ValueError("Expected 'mean' column in averaged data.")
 
-            ax.plot(x, y, label=f"Stim {stim} µA", color=color)
+                    x = g["time"].to_numpy()
+                    y = g["mean"].to_numpy()
 
-        ax.set_title('Averaged Sweeps')
-        ax.set_xlabel('Time (ms)')
-        ax.set_ylabel('Voltage (mV)')
-        ax.legend()
-        ax.grid()
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x * 1000:.0f}"))
-        fig.tight_layout()
-        plt.show()
+                    if self.smooth:
+                        y = self.apply_smoothing(y, fs=fs)
+
+                    ax.plot(x, y, label=f"Stim {stim} µA", color=color)
+
+                ax.set_title('Averaged Sweeps')
+                ax.set_xlabel('Time (ms)')
+                ax.set_ylabel('Response (mV)')
+                ax.legend()
+                ax.grid()
+                ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x * 1000:.0f}"))
+                fig.tight_layout()
+                plt.show()

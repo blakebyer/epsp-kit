@@ -48,20 +48,6 @@ class IOConfig:
     write_results: bool = True
     write_plots: bool = True
 
-
-@dataclass
-class PipelineConfig:
-    """
-    Top-level configuration for an analysis pipeline.
-
-    io              : input/output and acquisition parameters
-    features        : list of feature configs to run
-    global_smoothing: default smoothing policy, unless overridden per feature
-    """
-    io: IOConfig = field(default_factory=IOConfig)
-    features: list[FeatureConfig] = field(default_factory=list)
-    global_smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
-
 @dataclass
 class VizConfig:
     """
@@ -74,3 +60,18 @@ class VizConfig:
     color_map: str = "viridis"
     smooth: bool = False
     smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
+
+@dataclass
+class PipelineConfig:
+    """
+    Top-level configuration for an analysis pipeline.
+
+    io              : input/output and acquisition parameters
+    features        : list of feature configs to run
+    viz             : visualization configuration
+    global_smoothing: default smoothing policy, unless overridden per feature
+    """
+    io: IOConfig = field(default_factory=IOConfig)
+    features: list[FeatureConfig] = field(default_factory=list)
+    viz: VizConfig = field(default_factory=VizConfig)
+    global_smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)

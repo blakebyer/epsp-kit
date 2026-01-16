@@ -5,6 +5,7 @@ import numpy as np
 from epspkit.core.context import RecordingContext
 from epspkit.core import math as emath
 from epspkit.core.config import VizConfig, SmoothingConfig
+import scienceplots
 
 class Plot(ABC):
     """

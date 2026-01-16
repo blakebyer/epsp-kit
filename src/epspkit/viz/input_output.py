@@ -8,9 +8,9 @@ from epspkit.core.config import SmoothingConfig, VizConfig
 from epspkit.core.context import RecordingContext
 from epspkit.viz.base import Plot
 
-class AnnotatedPlot(Plot):
+class IOPlot(Plot):
     """
-    Plots averaged sweeps with optional smoothing.
+    Plots input output curves, including fiber volley amplitude vs stimulus intensity and EPSP slope vs stimulus intensity.
     """
     def __init__(self, config: VizConfig, effective_smoothing: SmoothingConfig | None = None):
         super().__init__(config, effective_smoothing)

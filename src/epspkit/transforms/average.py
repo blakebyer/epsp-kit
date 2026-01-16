@@ -25,14 +25,14 @@ def average_sweeps(context: RecordingContext) -> RecordingContext:
         )
         return context
 
-    if "value" not in tidy.columns:
-        raise ValueError("Expected 'value' column in tidy data.")
+    if "voltage" not in tidy.columns:
+        raise ValueError("Expected 'voltage' column in tidy data.")
 
     averaged = (
         tidy.groupby(group_cols, sort=False)
         .agg(
-            mean=("value", "mean"),
-            sem=("value", lambda x: x.std(ddof=1) / np.sqrt(len(x))),
+            mean=("voltage", "mean"),
+            sem=("voltage", lambda x: x.std(ddof=1) / np.sqrt(len(x))),
         )
         .reset_index()
         .sort_values(group_cols, kind="mergesort")
