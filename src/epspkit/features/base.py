@@ -35,7 +35,7 @@ class Feature(ABC):
                   feature = MyFeature(cfg, effective_smoothing=pipeline_cfg.global_smoothing)
 
             - Let feature override global if desired (in pipeline code):
-                  eff = cfg.smoothing if cfg.smoothing.method != "none" else pipeline_cfg.global_smoothing
+                  eff = cfg.smoothing if cfg.smoothing is not None else pipeline_cfg.global_smoothing
                   feature = MyFeature(cfg, effective_smoothing=eff)
 
             If not provided, we fall back to cfg.smoothing.

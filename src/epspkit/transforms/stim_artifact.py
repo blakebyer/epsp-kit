@@ -40,7 +40,7 @@ def crop_stim_artifact(
         cropped["time"] = cropped["time"] - float(cropped["time"].iloc[0])
         return cropped
 
-    context.tidy = tidy_df.groupby(["stim_intensity", "sweep"], group_keys=False).apply(crop_group)
+    context.tidy = tidy_df.groupby(["stim_intensity", "abf_sweep"], group_keys=False)[["stim_intensity", "abf_sweep", "time", "voltage"]].apply(crop_group)
     return context
 
 def template_subtract_stim_artifact(
@@ -67,7 +67,7 @@ def template_subtract_stim_artifact(
 
     def subtract_template(g_int: pd.DataFrame) -> pd.DataFrame:
         # g_int = all sweeps for one stim_intensity
-        g_int = g_int.sort_values(["sweep", "time"]).copy()
+        g_int = g_int.sort_values(["abf_sweep", "time"]).copy()
 
         # Build template using columns only
         template_df = (
@@ -88,7 +88,7 @@ def template_subtract_stim_artifact(
             return g_int
 
         out = []
-        for sw, g in g_int.groupby("sweep", sort=False):
+        for sw, g in g_int.groupby("abf_sweep", sort=False):
             g = g.sort_values("time").copy()
             x = g["time"].to_numpy()
             y = g["voltage"].to_numpy()
@@ -107,5 +107,5 @@ def template_subtract_stim_artifact(
 
         return pd.concat(out, ignore_index=True)
 
-    context.tidy = tidy_df.groupby("stim_intensity", group_keys=False).apply(subtract_template)
+    context.tidy = tidy_df.groupby("stim_intensity", group_keys=False)[["stim_intensity", "abf_sweep", "sweepNumber", "time", "voltage"]].apply(subtract_template)
     return context

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-import numpy as np
+from pathlib import Path
+
 from epspkit.core.context import RecordingContext
-from epspkit.core import math as emath
 from epspkit.core.config import VizConfig, SmoothingConfig
+from epspkit.features.base import Feature
 import scienceplots
+
 
 class Plot(ABC):
     """
@@ -39,47 +41,24 @@ class Plot(ABC):
         """Render the plot for the given context."""
         raise NotImplementedError
 
-    def apply_smoothing(self, y, fs: float | None = None):
-        """
-        Apply the configured smoothing method to a 1D trace y.
+    apply_smoothing = Feature.apply_smoothing
 
-        If method == "none", returns y unchanged.
+    def _resolve_output_path(
+        self,
+        context: RecordingContext,
+        output_path: Path | str,
+        ext: str = "png",
+        output_stem: str | None = None,
+    ) -> Path:
+        output = Path(output_path)
+        stem = output_stem or "recording"
 
-        Parameters
-        ----------
-        y
-            1D array-like trace.
-        fs
-            Sampling rate in Hz. Required for Butterworth smoothing.
-        """
-        cfg = self.smoothing
+        if output.suffix:
+            output_dir = output.parent
+            filename = f"{stem}_{self.name}.{ext}"
+        else:
+            output_dir = output
+            filename = f"{stem}_{self.name}.{ext}"
 
-        if cfg.method == "none":
-            return y
-
-        y_arr = np.asarray(y)
-
-        if cfg.method == "moving_average":
-            return emath.moving_average(y_arr, cfg.window_size)
-
-        if cfg.method == "savgol":
-            window = cfg.window_size
-            poly = cfg.polyorder
-
-            # enforce odd window and basic validity
-            if window % 2 == 0:
-                window += 1
-            if window <= poly:
-                raise ValueError(
-                    f"Savgol requires window_size > polyorder "
-                    f"(got window_size={window}, polyorder={poly})."
-                )
-
-            return emath.savgol(y_arr, window, poly)
-
-        if cfg.method == "butter_lowpass":
-            if fs is None:
-                raise ValueError("Butterworth smoothing requires a sampling rate fs.")
-            return emath.butter_lowpass(y_arr, cfg.cutoff, fs, order=cfg.order)
-
-        raise ValueError(f"Unknown smoothing method: {cfg.method}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir / filename

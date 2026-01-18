@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.ticker import FuncFormatter
@@ -17,13 +19,8 @@ class SweepPlot(Plot):
         self.rc_params = config.rc_params or {}
         self.style = config.style
         self.color_map = config.color_map
-        self.smooth = config.smooth
 
-    def render(self, context: RecordingContext) -> None:
-        """
-        Render the sweep plot for the given context.
-        """
-
+    def _build_figure(self, context: RecordingContext) -> plt.Figure:
         abf_df = context.averaged
         fs = context.fs
 
@@ -47,17 +44,38 @@ class SweepPlot(Plot):
 
                     x = g["time"].to_numpy()
                     y = g["mean"].to_numpy()
+                    y = self.apply_smoothing(y, fs=fs)
 
-                    if self.smooth:
-                        y = self.apply_smoothing(y, fs=fs)
+                    ax.plot(x, y, label=f"{stim}", color=color)
 
-                    ax.plot(x, y, label=f"Stim {stim} µA", color=color)
-
-                ax.set_title('Averaged Sweeps')
+                ax.set_title('Evoked Field Potentials')
                 ax.set_xlabel('Time (ms)')
                 ax.set_ylabel('Response (mV)')
-                ax.legend()
+                ax.legend(title='Stimulus Intensity (µA)')
                 ax.grid()
                 ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x * 1000:.0f}"))
                 fig.tight_layout()
-                plt.show()
+                return fig
+
+    def render(self, context: RecordingContext) -> None:
+        """
+        Render the sweep plot for the given context.
+        """
+        self._build_figure(context)
+        plt.show()
+
+    def save(
+        self,
+        context: RecordingContext,
+        output_path: Path | str,
+        output_stem: str | None = None,
+    ) -> Path:
+        fig = self._build_figure(context)
+        save_path = self._resolve_output_path(
+            context,
+            output_path,
+            output_stem=output_stem,
+        )
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        return save_path

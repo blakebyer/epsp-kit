@@ -17,9 +17,24 @@ class PopSpikeFeature(Feature):
     def __init__(self, config: FeatureConfig, effective_smoothing: SmoothingConfig | None = None):
         super().__init__(config, effective_smoothing)
         params = self.config.params
-        self.ps_lag = params.get("lag_ms", 3.0)  # ms
-        self.prominence = params.get("prominence", 0.2)  # mV
-        self.threshold = params.get("threshold", 0.05)  # mV/ms
+        self.ps_lag = params.get("lag_ms")  # ms
+        self.prominence = params.get("prominence")  # mV
+        self.threshold = params.get("threshold")  # mV/ms
+        missing = [
+            name
+            for name, value in {
+                "lag_ms": self.ps_lag,
+                "prominence": self.prominence,
+                "threshold": self.threshold,
+            }.items()
+            if value is None
+        ]
+        if missing:
+            missing_str = ", ".join(missing)
+            raise ValueError(
+                "Missing required PopSpikeFeature parameters: "
+                f"{missing_str}."
+            )
 
     def run(self, context: RecordingContext) -> RecordingContext:
         fs = context.fs  # Hz
@@ -49,12 +64,12 @@ class PopSpikeFeature(Feature):
 
             ps_idx = None
             # PS is positive-going: look for peaks in y
-            pos_peaks = emath.find_peaks(y_w, prominence=self.prominence)
+            pos_peaks, _ = emath.find_peaks(y_w, prominence=self.prominence)
             if pos_peaks.size:
                 ps_rel = pos_peaks[np.argmax(y_w[pos_peaks])]
                 ps_idx = start_idx + ps_rel
             else: # if no peaks, try curvature detection
-                slope_peaks = emath.find_peaks(dy_w)
+                slope_peaks, _ = emath.find_peaks(dy_w)
                 if slope_peaks.size:
                     ps_start = slope_peaks[np.argmax(dy_w[slope_peaks])]  # max positive slope
                     zs = np.where(np.abs(dy_w) < self.threshold)[0]        # near-zero slopes

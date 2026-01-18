@@ -6,7 +6,6 @@ from typing import Any
 import pandas as pd
 
 from epspkit.core.config import PipelineConfig
-from epspkit.io.read_write import load_abf_to_context
 
 @dataclass
 class RecordingContext:
@@ -21,7 +20,7 @@ class RecordingContext:
         Sweep-averaged signal, usually one row per timepoint.
     fs : float
         Sampling rate in Hz.
-    meta : dict[str, Any]
+    metadata : dict[str, Any]
         Origin metadata (file path, experiment ID, stim times, etc.).
     results : dict[str, dict[str, Any]]
         Per-feature outputs: {'epsp': {...}, 'fiber_volley': {...}}.
@@ -33,7 +32,7 @@ class RecordingContext:
     tidy: pd.DataFrame
     averaged: pd.DataFrame
     fs: float
-    meta: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
     pipeline_cfg: PipelineConfig | None = None  # attached by pipeline
 
@@ -45,7 +44,8 @@ class RecordingContext:
         """Retrieve results for a given feature, or None if missing."""
         return self.results.get(feature_name, None)
     
-    def from_abf(self, file_path: str, stim_intensities: list[float], repnum: int) -> RecordingContext:
+    @staticmethod
+    def from_abf(file_path: str, stim_intensities: list[float], repnum: int) -> RecordingContext:
         """
         Load an ABF file and convert it to a RecordingContext.
 
@@ -62,6 +62,8 @@ class RecordingContext:
         RecordingContext
             RecordingContext object containing the data from the ABF file.
         """
+
+        from epspkit.io.read_write import load_abf_to_context
 
         return load_abf_to_context(
             file_path=file_path,

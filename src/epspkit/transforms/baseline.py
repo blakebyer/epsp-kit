@@ -39,5 +39,7 @@ def baseline_correction(
         g["voltage"] = g["voltage"] - baseline
         return g
 
-    context.tidy = tidy_df.groupby(["stim_intensity", "sweep"], group_keys=False).apply(correct_group)
+    context.tidy = tidy_df.groupby(["stim_intensity", "abf_sweep"], group_keys=False)[
+            ["stim_intensity", "abf_sweep", "sweepNumber", "time", "voltage"]
+        ].apply(correct_group)
     return context

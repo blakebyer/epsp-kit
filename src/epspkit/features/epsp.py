@@ -10,6 +10,7 @@ from epspkit.core import math as emath
 from typing import Optional
 import pandas as pd
 import numpy as np
+import warnings
 
 class EPSPFeature(Feature):
     """
@@ -18,8 +19,13 @@ class EPSPFeature(Feature):
     def __init__(self, config: FeatureConfig, effective_smoothing: SmoothingConfig | None = None):
         super().__init__(config, effective_smoothing)
         params = self.config.params
-        self.window_ms: float = params.get("window_ms", (1.5,5.0))  # ms
-        self.fit_distance = int(params.get("fit_distance", 4))  # points
+        self.window_ms = params.get("window_ms")  # ms
+        if self.window_ms is None:
+            raise ValueError("window_ms parameter must be specified for EPSPFeature.")
+        fit_distance = params.get("fit_distance")
+        if fit_distance is None:
+            raise ValueError("fit_distance parameter must be specified for EPSPFeature.")
+        self.fit_distance = int(fit_distance)  # points
 
     def run(self, context: RecordingContext) -> RecordingContext:
         """
@@ -39,6 +45,13 @@ class EPSPFeature(Feature):
     ) -> pd.DataFrame:
         t0, t1 = [v / 1000.0 for v in self.window_ms]
         results = []
+        if fv_df is None or fv_df.empty:
+            warnings.warn(
+                "Synaptic strength (fEPSP slope / fiber volley amplitude) cannot be calculated "
+                "without FiberVolleyFeature result",
+                RuntimeWarning,
+            )
+            fv_df = None
 
         for stim, g in abf_df.groupby("stim_intensity"):
             x = g["time"].to_numpy()
@@ -79,9 +92,8 @@ class EPSPFeature(Feature):
                 "slope_mid_s": float(x[slope_center_idx]),
                 "slope_mid_v": float(y[slope_center_idx]),
                 "epsp_amp": float(epsp_amp),
-                "epsp_to_fv": float(abs(m) / fv_amp) if fv_amp and m else np.nan,
-                "epsp_slope": float(abs(m)),
-                "epsp_slope_ms": float(abs(m) / 1000.0),
+                "epsp_to_fv": float((abs(m) / 1000.0) / fv_amp) if fv_amp and m else np.nan,
+                "epsp_slope": float(abs(m) / 1000.0), # mV/ms
                 "epsp_r2": float(r2),
             })
 

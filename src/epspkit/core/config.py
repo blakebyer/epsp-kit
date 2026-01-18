@@ -16,7 +16,7 @@ class SmoothingConfig:
       - cutoff/order for a generic low-pass if you want Butterworth
     """
     method: Literal["none", "moving_average", "savgol", "butter_lowpass"] = "none"
-    window_size: int = 11      # used by moving_average and savgol
+    window_size: int = 15      # used by moving_average and savgol
     polyorder: int = 3         # only used by savgol
     cutoff: float = 2000.0     # Hz, for butter_lowpass
     order: int = 3             # filter order for butter_lowpass
@@ -29,11 +29,23 @@ class FeatureConfig:
 
     name    : identifier for the feature (e.g., "fv", "epsp", "ps")
     params  : arbitrary feature-specific settings
-    smoothing : optional smoothing policy for this feature
+    smoothing : optional smoothing policy for this feature (None -> use global)
     """
     name: str
     params: dict[str, Any] = field(default_factory=dict)
-    smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
+    smoothing: SmoothingConfig | None = None
+
+
+@dataclass
+class TransformConfig:
+    """
+    Per-transform configuration.
+
+    name   : identifier for the transform (e.g., "baseline_correction")
+    params : arbitrary transform-specific settings
+    """
+    name: str
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -43,10 +55,12 @@ class IOConfig:
     """
     input_paths: Sequence[str] = field(default_factory=list)
     output_path: Path | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     repnum: int = 3
     stim_intensities: Sequence[float] = field(default_factory=list)
     write_results: bool = True
-    write_plots: bool = True
+    write_plots: bool = False
+    render_plots: bool = True
 
 @dataclass
 class VizConfig:
@@ -58,8 +72,7 @@ class VizConfig:
     rc_params: dict[str, Any] = field(default_factory=dict)
     style: str = "default" # Matplotlib style
     color_map: str = "viridis"
-    smooth: bool = False
-    smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
+    smoothing: SmoothingConfig | None = None
 
 @dataclass
 class PipelineConfig:
@@ -68,10 +81,12 @@ class PipelineConfig:
 
     io              : input/output and acquisition parameters
     features        : list of feature configs to run
-    viz             : visualization configuration
-    global_smoothing: default smoothing policy, unless overridden per feature
+    transforms      : ordered list of transforms to run
+    plots           : list of plot configs to render
+    global_smoothing: default smoothing policy, unless overridden per feature/plot
     """
     io: IOConfig = field(default_factory=IOConfig)
+    transforms: list[TransformConfig] = field(default_factory=list)
     features: list[FeatureConfig] = field(default_factory=list)
-    viz: VizConfig = field(default_factory=VizConfig)
+    plots: list[VizConfig] = field(default_factory=list)
     global_smoothing: SmoothingConfig = field(default_factory=SmoothingConfig)
