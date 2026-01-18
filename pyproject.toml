@@ -1,0 +1,28 @@
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "epspkit"
+version = "0.1.0"
+description = "A toolkit for analyzing excitatory post-synaptic potentials (EPSPs) from ABF recordings."
+readme = "README.md"
+authors = ["Blake Byer <you@example.com>"]
+packages = [{include = "epspkit", from = "src"}]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<4.0"
+pyabf = "*"
+numpy = "*"
+pandas = "*"
+matplotlib = "*"
+scipy = "*"
+openpyxl = "*"
+scienceplots = "*"
+
+[tool.poetry.group.notebook.dependencies]
+jupyter = "*"
+ipykernel = "*"
+
+[tool.poetry.urls]
+Homepage = "https://github.com/blakebyer/epsp-kit"

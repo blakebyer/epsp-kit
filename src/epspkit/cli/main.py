@@ -46,14 +46,14 @@ def main() -> None:
         features=[
             FeatureConfig(name="fiber_volley", params={"window_ms": [1.5, 3.0]}),
             FeatureConfig(name="epsp", params={"window_ms": [2.0, 5.0], "fit_distance": 4}),
-            FeatureConfig(name="pop_spike", params={"lag_ms": 3.0, "prominence": 0.2, "threshold": 0.05}),
+            FeatureConfig(name="pop_spike", params={"lag_ms": 3.0, "prominence": 0.1}),
         ],
         plots=[
-            VizConfig(name="input_output", stim_intensities=[25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600]),
+            VizConfig(name="annotated", stim_intensities=[25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600]),
         ],
         global_smoothing=SmoothingConfig(
             method="savgol",
-            window_size=15,
+            window_size=21,
             polyorder=3,
         ),
     )

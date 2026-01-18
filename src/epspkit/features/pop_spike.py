@@ -7,7 +7,6 @@ from epspkit.features.base import Feature
 from epspkit.core.context import RecordingContext
 from epspkit.core.config import FeatureConfig, SmoothingConfig
 from epspkit.core import math as emath
-from typing import Optional
 import pandas as pd
 import numpy as np
 
@@ -19,13 +18,11 @@ class PopSpikeFeature(Feature):
         params = self.config.params
         self.ps_lag = params.get("lag_ms")  # ms
         self.prominence = params.get("prominence")  # mV
-        self.threshold = params.get("threshold")  # mV/ms
         missing = [
             name
             for name, value in {
                 "lag_ms": self.ps_lag,
-                "prominence": self.prominence,
-                "threshold": self.threshold,
+                "prominence": self.prominence
             }.items()
             if value is None
         ]
@@ -45,52 +42,66 @@ class PopSpikeFeature(Feature):
         context.add_result(self.name, ps_df)
         return context
 
-    def calculate(self, abf_df: pd.DataFrame, epsp_df: pd.DataFrame, fs: float | None = None) -> pd.DataFrame:
+    def calculate(
+    self,
+    abf_df: pd.DataFrame,
+    epsp_df: pd.DataFrame,
+    fs: float | None = None,
+) -> pd.DataFrame:
+
         results = []
 
         for stim, g in abf_df.groupby("stim_intensity"):
             x = g["time"].to_numpy()
-            # Smooth the raw mean once; avoid re-smoothing the pre-smoothed column.
             y = self.apply_smoothing(g["mean"].to_numpy(), fs=fs)
 
             epsp_row = epsp_df.loc[epsp_df.stim_intensity == stim].iloc[0]
-            epsp_s = epsp_row["epsp_s"]
-            epsp_v = epsp_row["epsp_v"]
+            t_s = epsp_row["epsp_s"]
+            v_s = epsp_row["epsp_v"]
 
-            start_idx = int(np.searchsorted(x, epsp_s))
-            stop_idx = int(np.searchsorted(x, epsp_s + self.ps_lag / 1000.0))
+            i0 = np.searchsorted(x, t_s)
+            i1 = np.searchsorted(x, t_s + self.ps_lag / 1000.0)
+
             dy = emath.gradient(y, x)
-            y_w, dy_w = y[start_idx:stop_idx], dy[start_idx:stop_idx]
+            y_w, dy_w = y[i0:i1], dy[i0:i1]
 
             ps_idx = None
-            # PS is positive-going: look for peaks in y
-            pos_peaks, _ = emath.find_peaks(y_w, prominence=self.prominence)
-            if pos_peaks.size:
-                ps_rel = pos_peaks[np.argmax(y_w[pos_peaks])]
-                ps_idx = start_idx + ps_rel
-            else: # if no peaks, try curvature detection
-                slope_peaks, _ = emath.find_peaks(dy_w)
-                if slope_peaks.size:
-                    ps_start = slope_peaks[np.argmax(dy_w[slope_peaks])]  # max positive slope
-                    zs = np.where(np.abs(dy_w) < self.threshold)[0]        # near-zero slopes
-                    zs = zs[zs > ps_start]
-                    if zs.size:
-                        ps_end = zs[np.argmin(np.abs(dy_w[zs]))]          # closest to zero
-                        j = ps_start + np.argmax(y_w[ps_start:ps_end+1])  # hump top
-                        if (y_w[j] - y_w[ps_start]) >= self.prominence:
-                            ps_idx = start_idx + j
 
-            ps_amp = ps_amp = ps_s = ps_v = np.nan
+            # ---- 1. True peak detection ----
+            peaks, props = emath.find_peaks(y_w, prominence=self.prominence)
+            if peaks.size:
+                ps_rel = peaks[np.argmax(props["prominences"])]
+                ps_idx = i0 + ps_rel
+
+            ps_amp = ps_s = ps_v = np.nan
+
             if ps_idx is not None:
-                ps_s, ps_v = x[ps_idx], y[ps_idx]
-                if np.isfinite(ps_v) and np.isfinite(epsp_v):
-                    ps_amp = abs(epsp_v - ps_v)
+                t_p = x[ps_idx]
+                v_p = y[ps_idx]
+
+                # ---- 3. Find post-PS baseline anchor ----
+                after = slice(ps_idx + 1, i1)
+                if after.start < after.stop:
+                    b_rel = np.argmin(y[after])
+
+                    b_idx = after.start + b_rel
+                    t_b = x[b_idx]
+                    v_b = y[b_idx]
+
+                    # ---- 4. Baseline line ----
+                    m = (v_b - v_s) / (t_b - t_s)
+                    c = v_s - m * t_s
+                    v_base = m * t_p + c
+
+                    ps_amp = abs(v_p - v_base)
+                    ps_s, ps_v = t_p, v_p
 
             results.append({
                 "stim_intensity": stim,
                 "ps_amp": ps_amp,
                 "ps_s": ps_s,
-                "ps_v": ps_v
+                "ps_v": ps_v,
             })
 
         return pd.DataFrame(results)
+
