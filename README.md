@@ -1,4 +1,4 @@
-# epsp-kit
+# epspkit
 A toolkit for analyzing excitatory post-synaptic potentials (EPSPs) from ABF recordings.
 
 ## What it does
@@ -6,26 +6,22 @@ A toolkit for analyzing excitatory post-synaptic potentials (EPSPs) from ABF rec
 - Apply transforms (baseline correction, stim artifact removal, averaging)
 - Run features (fiber volley, fEPSP slope, population spike)
 - Render plots and/or save plot images
-- Save results to a single XLSX workbook per input file
+- Save results to a single Excel workbook per input file
 
-## Installation (Poetry)
+## Usage
+### 1. Install Poetry
+```bash
+python -m pip install --user pipx
+python -m pipx ensurepath
+pipx install poetry
+```
+### 2. Install epsp-kit
 ```bash
 git clone https://github.com/blakebyer/epsp-kit.git
 cd epsp-kit/epsp-kit
 poetry install
 ```
-
-Run via Poetry:
-```bash
-poetry run python -m epspkit.cli.main
-```
-
-Optional notebook extras:
-```bash
-poetry install -E notebook
-```
-
-## Quick start (pipeline)
+### 3. Edit quick start pipeline
 ```python
 from epspkit.core.config import (
     FeatureConfig,
@@ -81,21 +77,28 @@ pipeline_config = PipelineConfig(
 run_pipeline(pipeline_config)
 ```
 
-## Run Quick Start from the Command-Line 
-```cli
-python -m epspkit.cli.main
+### 4. Run via Poetry:
+```bash
+poetry run python -m epspkit.cli.main
+```
+
+Optional notebook extras:
+```bash
+poetry install -E notebook
 ```
 
 ## Output
-- Results are written to one XLSX per input file named `{stem}_results.xlsx`.
-- Each workbook contains sheets: `tidy`, `averaged`, `result_*`, `metadata`, `pipeline_config`.
+- Results are written to one Excel (.xlsx) per input file named `{stem}_results.xlsx`.
+- Each workbook contains sheets: `tidy` (raw data), `averaged` (averaged per stimulus intensity), `result_*` (feature results), `metadata` (optional metadata), `pipeline_config` (configuration for reproducibility).
 - Plot images are saved as `{stem}_{plot}.png` when `write_plots=True`.
 
 ## Notes
 - Feature params are required (no implicit defaults).
 - Transform order matters: baseline -> stim artifact removal -> average.
-- If multiple `input_paths` are provided, outputs are indexed with `_1`, `_2`, etc.
 
 ## Examples
 - `examples/main.py`
 - `examples/quickstart.ipynb`
+
+## Docs
+A description of the package in further detail can be found in `docs/epspkit.md`

@@ -15,10 +15,9 @@ def main() -> None:
     pipeline_config = PipelineConfig(
         io=IOConfig(
             input_paths=[
-                # "c:\\Users\\bbyer\\OneDrive\\Documents\\UniversityofKentucky\\Grad School Applications\\Oxford\\OxfordInterview\\data\\2025_05_22_0000.abf",
-                "c:\\Users\\bbyer\\OneDrive\\Documents\\UniversityofKentucky\\Grad School Applications\\Oxford\\OxfordInterview\\data\\2025_05_22_0004.abf",
+                "data/experiment1.abf",
             ],
-            output_path="c:\\Users\\bbyer\\OneDrive\\Documents\\UniversityofKentucky\\Grad School Applications\\Oxford\\OxfordInterview\\data",
+            output_path="results/experiment1_analysis.xlsx",
             metadata={
                 "experimenter": "Blake",
                 "animal_id": "M12",

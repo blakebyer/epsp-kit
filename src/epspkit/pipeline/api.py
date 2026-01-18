@@ -170,10 +170,7 @@ def run_pipeline(
         )
 
     def build_output_stems(input_paths: Sequence[str]) -> list[str]:
-        stems = [Path(path).stem for path in input_paths]
-        if len(stems) > 1:
-            stems = [f"{stem}_{idx + 1}" for idx, stem in enumerate(stems)]
-        return stems
+        return [Path(path).stem for path in input_paths]
 
     output_stems = build_output_stems(pipeline_config.io.input_paths)
     contexts = []
