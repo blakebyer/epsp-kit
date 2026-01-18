@@ -22,7 +22,7 @@ poetry run python -m epspkit.cli.main
 
 Optional notebook extras:
 ```bash
-poetry install --with notebook
+poetry install -E notebook
 ```
 
 ## Quick start (pipeline)

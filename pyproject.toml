@@ -19,10 +19,11 @@ matplotlib = "*"
 scipy = "*"
 openpyxl = "*"
 scienceplots = "*"
+jupyter = { version = "*", optional = true }
+ipykernel = { version = "*", optional = true }
 
-[tool.poetry.group.notebook.dependencies]
-jupyter = "*"
-ipykernel = "*"
+[tool.poetry.extras]
+notebook = ["jupyter", "ipykernel"]
 
 [tool.poetry.urls]
 Homepage = "https://github.com/blakebyer/epsp-kit"
