@@ -8,3 +8,5 @@ cli/__pycache__
 tests/__pycache__
 io/__pycache__
 examples/__pycache__
+data/
+results/

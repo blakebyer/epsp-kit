@@ -1,5 +1,5 @@
 # epspkit
-A toolkit for analyzing excitatory post-synaptic potentials (EPSPs) from ABF recordings.
+A toolkit for analyzing excitatory post-synaptic potentials (EPSPs).
 
 ## What it does
 - Load ABF recordings into tidy and averaged pandas DataFrames

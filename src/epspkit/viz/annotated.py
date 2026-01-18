@@ -59,7 +59,7 @@ class AnnotatedPlot(Plot):
                     ax.plot(x, y, label=f"{stim} µA", color=color)
                     self.annotate_features(ax, stim, fv_df, epsp_df, ps_df, used_labels)
 
-                ax.set_title('Evoked Field Potentials with Annotations')
+                ax.set_title('Evoked Field Potential with Annotations')
                 ax.set_xlabel('Time (ms)')
                 ax.set_ylabel('Voltage (mV)')
                 ax.legend()

@@ -37,7 +37,7 @@ class SweepPlot(Plot):
                     g = abf_df.loc[abf_df["stim_intensity"] == stim]
                     if g.empty:
                         continue
-                    color = cmap(idx / (n_colors - 1)) if n_colors > 1 else cmap(0.0)
+                    color = cmap(idx / (n_colors - 1)) if n_colors > 1 else 'black'
 
                     if "mean" not in g.columns:
                         raise ValueError("Expected 'mean' column in averaged data.")
