@@ -28,7 +28,7 @@ with col1:
     filetypes = [".abf",".csv", ".tsv"]
     uploaded_files = st.file_uploader("Upload data", accept_multiple_files=True, type=filetypes)
     repnum = st.number_input("No. of Repetitions:", min_value=1, max_value=100, step=1)
-    intensities = collect_numbers(st.text_input("Stimulus intensities (comma-separated):"))
+    stimuli = collect_numbers(st.text_input("Stimulus stimuli (comma-separated):"))
 
     baseline_window = collect_window(st.text_input("Baseline window (comma-separated):"))
     artifact_window = collect_window(st.text_input("Artifact window (comma-separated):"))
@@ -39,8 +39,8 @@ with col1:
             st.error("Please upload at least one data file.")
             st.stop()
 
-        if not intensities:
-            st.error("Please enter stimulus intensities.")
+        if not stimuli:
+            st.error("Please enter stimulus stimuli.")
             st.stop()
 
         params = PreprocessParams(
@@ -59,18 +59,18 @@ with col1:
 
         all_raw = load_bulk(
             uploaded_files,
-            intensities=intensities,
+            stimuli=stimuli,
             repnum=repnum,
         )
 
         all_prep = preprocess(all_raw, params)
 
         st.session_state["all_prep"] = all_prep
-        st.session_state["intensities"] = intensities
+        st.session_state["stimuli"] = stimuli
         st.session_state["uploaded_file_names"] = [file.name for file in uploaded_files]
         st.session_state["figs"] = plot_all_files(
             all_prep,
-            intensities=intensities,
+            stimuli=stimuli,
             max_per_page=6,
         )
         st.session_state["params"] = params
@@ -84,7 +84,7 @@ with col2:
 
     all_prep = st.session_state["all_prep"]
     params = st.session_state["params"]
-    intensities = st.session_state["intensities"]
+    stimuli = st.session_state["stimuli"]
     figs = st.session_state["figs"]
 
     if "results" not in st.session_state:
@@ -120,7 +120,7 @@ with col2:
             )
 
         with col4:
-            template_intensities = collect_numbers(st.text_input("Template intensities (comma-separated):"))
+            template_stimuli = collect_numbers(st.text_input("Template stimuli (comma-separated):"))
             
             r2_threshold = st.number_input("$R^2$ threshold:", min_value=0.0, max_value=1.0)
 
@@ -147,7 +147,7 @@ with col2:
                     test_df=test_prep,
                     template_window=template_window,
                     search_window=search_window,
-                    template_intensities=template_intensities,
+                    template_stimuli=template_stimuli,
                     r2_threshold=r2_threshold,
                     slope_transform=slope_transform,
                 ),

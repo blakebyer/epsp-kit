@@ -9,16 +9,16 @@ def generative_epsp_model(
         artifact_window: tuple, 
         fv_window: tuple, 
         ps_window: tuple,
-        template_intensities: list[int]):
+        template_stimuli: list[int]):
     """A generative fEPSP model based on sequential template matching."""
-    template_data = intermediate.filter(pl.col("intensity").is_in(template_intensities))
+    template_data = intermediate.filter(pl.col("stimulus").is_in(template_stimuli))
     if template_data.is_empty():
-        raise ValueError("No traces found for template_intensities.")
+        raise ValueError("No traces found for template_stimuli.")
 
     template_snippets = []
-    for _, group in template_data._(["id", "intensity"], sort=False):
+    for _, group in template_data._(["id", "stimulus"], sort=False):
         time = group["time"].to_numpy()
-        signal = group["voltage"].to_numpy()
+        signal = group["value"].to_numpy()
 
         template_start, template_stop = window_to_indices(time, template_window)
         template_snippets.append(signal[template_start:template_stop])

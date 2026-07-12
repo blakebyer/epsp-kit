@@ -8,7 +8,7 @@ authors = [{ name = "Blake Byer", email = "blake@blakebyer.com" }, ]
 packages = [{ include = "evoked", from = "src" }]
 
 [tool.poetry.dependencies]
-python = ">=3.14"
+python = ">=3.13"
 matplotlib = "3.10.8"
 numpy = "2.4.1"
 pandera = {extras = ["polars"], version = "^0.32.1"}
@@ -22,6 +22,9 @@ notebook = "^7.6.0"
 scikit-learn = "^1.9.0"
 xlsxwriter = "^3.2.9"
 polars = "^1.42.1"
+neo = "^0.14.5"
+polars-config-meta = {extras = ["polars"], version = "^0.3.4"}
+statsmodels = "^0.14.6"
 
 [project.urls]
 repository = "https://github.com/blakebyer/evoked"

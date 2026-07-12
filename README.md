@@ -8,21 +8,21 @@ evoked is a package for analyzing evoked local field potentials using template m
 - Renders and save common plots (e.g., IO curves)
 
 ## Installation
-### 1. [Install Python >= 3.14](https://www.python.org/downloads/)
+### 1. [Install Python >= 3.13](https://www.python.org/downloads/)
 Check installation:
 ```bash
-python3.14 --version
+python3.13 --version
 ```
 
 ### 2. Install Poetry
 ```bash
-python3.14 -m pip install poetry
+python3.13 -m pip install poetry
 ```
 ### 3. Install evoked
 ```bash
 git clone https://github.com/blakebyer/evoked.git
 cd evoked
-poetry env use python3.14
+poetry env use python3.13
 poetry install
 ```
 

@@ -207,7 +207,7 @@ fig.update_layout(
     height=450,
     margin=dict(l=0, r=0, t=0, b=0),
     xaxis_title="Time (ms)",
-    yaxis_title="voltage (mV)",
+    yaxis_title="Voltage (mV)",
     #dragmode="drawline",
     modebar_add=["drawline","eraseshape"]
 )

@@ -6,6 +6,7 @@ from pandera.typing.polars import DataFrame
 import pandera.polars as pa
 import xlsxwriter
 import polars as pl
+import polars_config_meta
 import numpy as np
 import warnings
 import json
@@ -14,7 +15,7 @@ from contextlib import contextmanager
 
 """
     Tabular data should look like:
-    id  time  voltage  intensity  sweepNumber
+    id  time  value  stimulus  sweep_index
     <str>  <float>  <float>  <int>  <int>  
 """
 # TODO:
@@ -50,30 +51,30 @@ def as_readable_file(file):
 @pa.check_types
 def load_abf(
     filename,
-    intensities: list[int],
+    stimuli: list[int],
     id_value: str,
     repnum: int,
 ) -> DataFrame[RecordingData]:
     abf = pyabf.ABF(filename)
-    n_intensities = len(intensities)
+    n_stimuli = len(stimuli)
     n_sweeps = len(abf.sweepList)
-    expected = n_intensities * repnum
+    expected = n_stimuli * repnum
     if n_sweeps != expected:
         raise ValueError(f"{filename}: expected {expected} sweeps, got {n_sweeps}")
     data = []
-    for sweep_i, sweepNumber in enumerate(abf.sweepList):
-        abf.setSweep(sweepNumber)
+    for sweep_i, sweep_index in enumerate(abf.sweepList):
+        abf.setSweep(sweep_index)
 
-        intensity_index = sweep_i // repnum
-        stim_intensity = intensities[intensity_index]
+        stimulus_index = sweep_i // repnum
+        stim_stimulus = stimuli[stimulus_index]
 
         data.append(
             pl.DataFrame({
                 "id": id_value,
                 "time": np.asarray(abf.sweepX, dtype=np.float64),
-                "voltage": np.asarray(abf.sweepY, dtype=np.float64),
-                "intensity": pl.Series([stim_intensity] * len(abf.sweepX), dtype=pl.Int64),
-                "sweepNumber": pl.Series([sweepNumber] * len(abf.sweepX), dtype=pl.Int64),
+                "value": np.asarray(abf.sweepY, dtype=np.float64),
+                "stimulus": pl.Series([stim_stimulus] * len(abf.sweepX), dtype=pl.Int64),
+                "sweep_index": pl.Series([sweep_index] * len(abf.sweepX), dtype=pl.Int64),
             })
         )
     return pl.concat(data, how="vertical")
@@ -89,7 +90,7 @@ def load_tsv(filename) -> DataFrame[RecordingData]:
 @pa.check_types
 def load_bulk(
     files,
-    intensities: list[int] | None = None,
+    stimuli: list[int] | None = None,
     id_values: list[str] | None = None,
     repnum: int | None = None,
 ) -> DataFrame[RecordingData]:
@@ -104,8 +105,8 @@ def load_bulk(
 
             try:
                 if suffix == ".abf":
-                    if any(var is None for var in (intensities, repnum)):
-                        raise ValueError("ABF loading requires intensities and repnum.")
+                    if any(var is None for var in (stimuli, repnum)):
+                        raise ValueError("ABF loading requires stimuli and repnum.")
 
                     if id_values is None:
                         id_value = Path(name).stem
@@ -116,7 +117,7 @@ def load_bulk(
 
                     df = load_abf(
                         source,
-                        intensities=intensities,
+                        stimuli=stimuli,
                         id_value=id_value,
                         repnum=repnum,
                     )

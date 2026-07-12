@@ -10,8 +10,9 @@ from matplotlib.ticker import FuncFormatter
 import matplotlib as mpl
 from matplotlib.lines import Line2D
 import math
+import warnings
 
-def plot_io_curve(recording_result: RecordingResult, features: list[str], intensities: list[int], rc_params: dict | None = None):
+def plot_io_curve(recording_result: RecordingResult, features: list[str], stimuli: list[int], rc_params: dict | None = None):
     with plt.rc_context(rc_params):
         fig, axes = plt.subplots(ncols=len(features))
         
@@ -26,16 +27,16 @@ def plot_io_curve(recording_result: RecordingResult, features: list[str], intens
                 continue
             
             rdata = r_result.result
-            rdata = rdata.filter(pl.col("intensity").is_in(intensities))
+            rdata = rdata.filter(pl.col("stimulus").is_in(stimuli))
 
-            stats = rdata.group_by("intensity").agg(
+            stats = rdata.group_by("stimulus").agg(
                 pl.col("scale").mean().alias("mean"),
                 (pl.col("scale").std() / pl.col("scale").count().sqrt()).alias("sem"),
-            ).sort("intensity")
+            ).sort("stimulus")
             color_val = cmap(i / max(1, len(features) - 1))
 
             axes[i].errorbar(
-                stats['intensity'].to_numpy(),
+                stats['stimulus'].to_numpy(),
                 stats['mean'].to_numpy(),
                 yerr=stats['sem'].to_numpy(),
                 fmt='-o',
@@ -43,7 +44,7 @@ def plot_io_curve(recording_result: RecordingResult, features: list[str], intens
                 capsize=3
             )
             axes[i].set_ylabel('Scale')
-            axes[i].set_xlabel('Intensity')
+            axes[i].set_xlabel('stimulus')
             axes[i].set_title(feature)
             axes[i].set_xticks(range(0,700,100))
             axes[i].grid(alpha=0.3)
@@ -53,19 +54,27 @@ def plot_io_curve(recording_result: RecordingResult, features: list[str], intens
 
         return fig, axes
 
-def plot_trace(intermediate: DataFrame[IntermediateResult], intensities: list[int], id_value: str, recording_result: RecordingResult | None = None, features: list[str] | None = None, annotated: bool = False, rc_params: dict | None = None):
+def plot_trace(intermediate: DataFrame[IntermediateResult], stimuli: list[str], id_value: str, channel: int, recording_result: RecordingResult | None = None, features: list[str] | None = None, annotated: bool = False, rc_params: dict | None = None):
     with plt.rc_context(rc_params):
-        intermediate = intermediate.filter(pl.col("id")==id_value)
+        intermediate = intermediate.filter(
+            (pl.col("id")==id_value) &
+            (pl.col("channel")==channel)
+            )
+        if intermediate.is_empty():
+            raise ValueError(f"No data found for id={id_value}, channel={channel}")
         fig, ax = plt.subplots(figsize=(8,6))
 
         cmap = mpl.colormaps["cividis"]
 
-        for i, intensity in enumerate(intensities):
-            color_val = cmap(i / max(1, len(intensities) - 1)) if len(intensities) > 1 else 'black'
-            idata = intermediate.filter(pl.col("intensity")==intensity)
-            time = idata['time'].to_numpy()
-            voltage = idata['voltage'].to_numpy()
-            ax.plot(time, voltage, color=color_val, label=f"{intensity}")
+        for i, stimulus in enumerate(stimuli):
+            color_val = cmap(i / max(1, len(stimuli) - 1)) if len(stimuli) > 1 else 'black'
+            idata = intermediate.filter(pl.col("stimulus")==stimulus)
+            if idata.is_empty():
+                raise ValueError(f"No trace data found for stimulus={stimulus} at channel={channel} and id={id_value}")
+            time = idata['time'] - idata['time'][0]
+            time = time.to_numpy()
+            value = idata['value'].to_numpy()
+            ax.plot(time, value, color=color_val, label=f"{stimulus}")
             if annotated:
                 feature_cmap = mpl.colormaps["Paired"]
 
@@ -77,24 +86,26 @@ def plot_trace(intermediate: DataFrame[IntermediateResult], intensities: list[in
                     rdata = r_result.result
                     rdata = rdata.filter(
                         (pl.col("id") == id_value) &
-                        (pl.col("intensity") == intensity)
+                        (pl.col("stimulus") == stimulus) &
+                        (pl.col("channel")==channel)
                     )
 
                     if rdata.is_empty():
+                        warnings.warn(f"No detection for {feature} at channel={channel}, id={id_value}, and stimulus={stimulus}")
                         continue
 
                     feature_color = feature_cmap(j / max(1, len(features) - 1))
-                    half_width = (r_result.template_window[1] - r_result.template_window[0]) / 2000
+                    half_width = (len(r_result.template) // 2) / float(rdata.config_meta.get_metadata().get("fs"))
 
-                    for mt in rdata["feature_time"].to_numpy() / 1000:
+                    for mt in rdata["feature_time"].to_numpy():
                         mask = (time >= mt - half_width) & (time <= mt + half_width)
-                        y = np.interp(mt, time, voltage)
+                        y = np.interp(mt, time, value)
 
-                        ax.plot(time[mask], voltage[mask], color=feature_color, linewidth=2.5, zorder=5)
+                        ax.plot(time[mask], value[mask], color=feature_color, linewidth=2.5, zorder=5)
                         ax.scatter(mt, y, color=feature_color, edgecolors="black", zorder=6)
         
         trace_legend = ax.legend(
-            title="Stimulus Intensity (µA)",
+            title=f"Stimulus ({rdata.config_meta.get_metadata().get("stimulus_unit")})",
             loc="lower right"
         )
         ax.add_artist(trace_legend)
@@ -120,10 +131,9 @@ def plot_trace(intermediate: DataFrame[IntermediateResult], intensities: list[in
             )
 
         fig.suptitle("Evoked Field Potential")
-        ax.set_xlabel("Time (ms)")
-        ax.set_ylabel("Response (mV)")
+        ax.set_xlabel(f"Time ({rdata.config_meta.get_metadata().get("time_unit")})")
+        ax.set_ylabel(f"Response ({rdata.config_meta.get_metadata().get("value_unit")})")
         ax.grid(alpha=0.3)
-        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, pos: f"{x * 1000:.0f}"))
         plt.tight_layout()
 
         return fig, ax
@@ -132,14 +142,14 @@ def plot_fit(
     intermediate: DataFrame[IntermediateResult],
     recording_result: RecordingResult,
     features: list[str],
-    intensity: int,
+    stimulus: int,
     id_value: str,
     rc_params: dict | None = None,
 ):
     with plt.rc_context(rc_params):
         idata = intermediate.filter(
                 (pl.col("id") == id_value) &
-                (pl.col("intensity") == intensity)
+                (pl.col("stimulus") == stimulus)
         )
 
         if idata.is_empty():
@@ -154,9 +164,10 @@ def plot_fit(
         )
 
         cmap = mpl.colormaps["Paired"]
-
+        
+        fs = intermediate.config_meta.get_metadata().get("fs")
         time = idata["time"].to_numpy()
-        voltage = idata["voltage"].to_numpy()
+        value = idata["value"].to_numpy()
 
         for i, feature in enumerate(features):
             r_result = recording_result.results[feature]
@@ -171,7 +182,7 @@ def plot_fit(
             rdata = r_result.result
             row = rdata.filter(
                         (pl.col("id") == id_value) &
-                        (pl.col("intensity") == intensity)
+                        (pl.col("stimulus") == stimulus)
             )
 
             if row.is_empty():
@@ -196,7 +207,7 @@ def plot_fit(
 
             template = np.asarray(template, dtype=float).ravel()
 
-            signal = voltage.copy()
+            signal = value.copy()
             if slope_transform:
                 signal = np.gradient(signal, time)
 
@@ -255,7 +266,7 @@ def plot_fit(
             axes[i, 0].legend(loc="best")
             axes[i, 0].grid(alpha=0.3)
 
-            s_start, s_stop = window_to_indices(time, search_window)
+            s_start, s_stop = window_to_indices(time, search_window, fs)
 
             first_center = s_start + left
             last_center = s_stop - right
@@ -297,7 +308,7 @@ def plot_fit(
             axes[i, 1].set_xlabel("Time (ms)")
             axes[i, 1].grid(alpha=0.3)
 
-        fig.suptitle(f"{intensity} µA", fontsize=16, fontweight="bold")
+        fig.suptitle(f"{stimulus} µA", fontsize=16, fontweight="bold")
         fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
 
         return fig, axes
@@ -318,14 +329,14 @@ def plot_detected(recording_result: RecordingResult, features: list[str], rc_par
             detection = r_result.result
             plot_df = (
                 detection
-                .group_by("intensity")
+                .group_by("stimulus")
                 .agg(
                     (pl.col("detected").mean() * 100).alias("percent_detected")
                 )
-            ).sort("intensity")
+            ).sort("stimulus")
             
             ax.plot(
-                plot_df["intensity"].to_numpy(), 
+                plot_df["stimulus"].to_numpy(), 
                 plot_df["percent_detected"].to_numpy(),
                 marker="o", 
                 label=feature,
@@ -334,7 +345,7 @@ def plot_detected(recording_result: RecordingResult, features: list[str], rc_par
             ax.grid(alpha=0.3)
             
         # format shared axis
-        ax.set_xlabel("Stimulus Intensity (µA)")
+        ax.set_xlabel("Stimulus stimulus (µA)")
         ax.set_ylabel("Detected (%)")
         ax.set_ylim(-5, 105)
         ax.legend(title="Features")
@@ -343,7 +354,7 @@ def plot_detected(recording_result: RecordingResult, features: list[str], rc_par
 
         return fig, ax
     
-def plot_all_files(intermediate, intensities: list[int], max_per_page: int = 6, rc_params: dict | None = None):
+def plot_all_files(intermediate, stimuli: list[int], max_per_page: int = 6, rc_params: dict | None = None):
     """Quickly plot all files"""
     figs = []
 
@@ -366,7 +377,7 @@ def plot_all_files(intermediate, intensities: list[int], max_per_page: int = 6, 
             for idx, id_value in enumerate(page_ids):
                 temp_fig, temp_ax = plot_trace(
                     intermediate=intermediate, 
-                    intensities=intensities, 
+                    stimuli=stimuli, 
                     id_value=id_value,
                     annotated=False
                 )
@@ -382,7 +393,7 @@ def plot_all_files(intermediate, intensities: list[int], max_per_page: int = 6, 
                     )
                     
                 target_ax.set_title(f"{id_value}", fontsize=10, fontweight="bold")
-                target_ax.legend(title="Stimulus Intensity (µA)")
+                target_ax.legend(title="Stimulus stimulus (µA)")
                 target_ax.set_xlabel("Time (ms)")
                 target_ax.set_ylabel("Response (mV)")
                 target_ax.grid(alpha=0.3)

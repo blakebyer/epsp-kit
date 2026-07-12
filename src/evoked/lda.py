@@ -1,11 +1,11 @@
 """Linear discriminant analysis"""
 from __future__ import annotations
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 import polars as pl
 from evoked.base import IntermediateResult, FeatureResult, window_to_indices
 from pandera.typing.polars import DataFrame
-from sklearn.covariance import OAS # Oracle Approximating Shrinkage
-from evoked.ols import center_signal
+from evoked.ols import center_signal, estimate_snr
 
 def estimate_noise_covariance(noise_snippets: list[np.ndarray]) -> np.ndarray:
     """Estimate diagonal noise covariance matrix"""
@@ -14,9 +14,9 @@ def estimate_noise_covariance(noise_snippets: list[np.ndarray]) -> np.ndarray:
     variances[variances <= 1e-20] = 1e-20 
     return np.diag(variances)
 
-def estimate_score(snippet: np.ndarray, template: np.ndarray, covariance_matrix: np.ndarray):
+def estimate_score(windows: np.ndarray, template: np.ndarray, covariance_matrix: np.ndarray):
     """Linear discriminant analysis score function, assuming equal lag priors."""
-    snippet_c = center_signal(snippet)
+    snippet_c = center_signal(windows)
     template_c = center_signal(template)
     
     Cinv_s = np.linalg.solve(covariance_matrix, snippet_c)
@@ -25,10 +25,10 @@ def estimate_score(snippet: np.ndarray, template: np.ndarray, covariance_matrix:
     left = np.dot(template_c, Cinv_s)
     right = 0.5 * np.dot(template_c, Cinv_t)
 
-    return float(left - right)
+    return left - right
 
-def estimate_r2_lda(snippet: np.ndarray, template: np.ndarray, covariance_matrix: np.ndarray):
-    snippet_c = center_signal(snippet)
+def estimate_r2_lda(windows: np.ndarray, template: np.ndarray, covariance_matrix: np.ndarray):
+    snippet_c = center_signal(windows)
     template_c = center_signal(template)
 
     scale = estimate_scale_lda(snippet_c, template_c, covariance_matrix)
@@ -43,7 +43,7 @@ def estimate_r2_lda(snippet: np.ndarray, template: np.ndarray, covariance_matrix
 
     if sst <= 1e-20:
         return np.nan
-    return float(1.0 - sse / sst)
+    return 1.0 - sse / sst
 
 def estimate_posterior(score_arr: np.ndarray) -> np.ndarray:
     """Answers: Given the feature exists somewhere in this search window, which lag is most likely?"""
@@ -53,13 +53,13 @@ def estimate_posterior(score_arr: np.ndarray) -> np.ndarray:
     return exp_scores / np.nansum(exp_scores)
 
 def estimate_scale_lda(
-    snippet: np.ndarray,
+    windows: np.ndarray,
     template: np.ndarray,
     covariance_matrix: np.ndarray,
 ) -> float:
-    if snippet.size != template.size:
-        raise ValueError("Snippet and template must have the same length.")
-    snippet_c = center_signal(snippet)
+    if windows.size != template.size:
+        raise ValueError("Snippet and template must have the same length to estimate covariance matrix for LDA.")
+    snippet_c = center_signal(windows)
     template_c = center_signal(template)
     if covariance_matrix.shape != (snippet_c.size, snippet_c.size):
         raise ValueError("Covariance matrix has wrong shape.")
@@ -72,163 +72,156 @@ def estimate_scale_lda(
     if denom <= 1e-20:
         return np.nan
 
-    return float(np.dot(template_c, Cinv_s) / denom)
+    return np.dot(template_c, Cinv_s) / denom
 
 def build_template_lda(
     intermediate: DataFrame[IntermediateResult],
-    template_window: tuple[float, float],
+    window: tuple[float, float],
     noise_window: tuple[float, float],
-    template_intensities: list[int],
     slope_transform: bool = False,
-) -> tuple[np.ndarray, np.ndarray, bool]:
+    mad_threshold: float = 10.0,
+) -> tuple[np.ndarray, list[tuple], np.ndarray, bool, float]:
     """Builds a template, covariance matrix, and returns it alongside its slope_transform state."""
-    template_data = intermediate.filter(pl.col("intensity").is_in(template_intensities))
-    if template_data.is_empty():
-        raise ValueError("No traces found for template_intensities.")
+    fs = intermediate.config_meta.get_metadata().get("fs")
 
-    template_snippets, noise_snippets = [], []
-    for _, group in template_data.group_by(["id", "intensity"]):
-        time = group["time"].to_numpy()
-        signal = group["voltage"].to_numpy()
+    n_template_samples = int(round((window[1] - window[0]) * fs))
+    n_noise_samples = int(round((noise_window[1] - noise_window[0]) * fs))
+    if n_template_samples != n_noise_samples:
+        raise ValueError(
+            f"Template and noise are not the same length, a requirement for LDA. Template is {n_template_samples} and noise is {n_noise_samples}." 
+        )
 
-        if slope_transform:
-            signal = np.gradient(signal, time)
+    template_snippets = []
+    noise_snippets = []
+    contributing_keys = []
+    max_snr = -np.inf
 
-        template_start, template_stop = window_to_indices(time, template_window)
-        noise_start, noise_stop = window_to_indices(time, noise_window)
+    for (id_value, channel, stimulus), group in intermediate.group_by(["id","channel","stimulus"]):
+        time = group["time"] - group["time"][0] # start at t=0
+        time = time.to_numpy()
+        signal = group["value"].to_numpy()
+
+        template_start, template_stop = window_to_indices(time, window, fs)
+        noise_start, noise_stop = window_to_indices(time, noise_window, fs)
+
+        signal = np.gradient(signal, time) if slope_transform else signal
+
+        template_time = time[template_start:template_stop]
+        template = signal[template_start:template_stop]
+        noise = signal[noise_start:noise_stop]
+        snr = estimate_snr(template_time, template, slope_transform, noise)
+        if snr > max_snr:
+            max_snr = snr
+        if snr < mad_threshold:
+            continue
         template_snippets.append(signal[template_start:template_stop])
         noise_snippets.append(signal[noise_start:noise_stop])
+        contributing_keys.append((id_value, channel, stimulus))
 
-    if template_snippets[-1].size != noise_snippets[-1].size:
-        raise ValueError("Noise window and template window must have same number of samples.")
-
+    if len(template_snippets) == 0:
+        raise ValueError(f"No templates with SNR>={mad_threshold} were found. Max SNR={max_snr:.3f}. Try lowering the threshold.")
     template_array = np.mean(np.vstack(template_snippets), axis=0)
     covariance_matrix = estimate_noise_covariance(noise_snippets)
     
-    return template_array, covariance_matrix, slope_transform
+    return template_array, contributing_keys, covariance_matrix, slope_transform, mad_threshold
 
 
 def fit_template_lda(
     intermediate: DataFrame[IntermediateResult],
-    template_window: tuple[float, float],
-    noise_window: tuple[float, float],
-    search_window: tuple[float, float],
-    template_package: tuple[np.ndarray, np.ndarray, bool],
+    window: tuple[float, float],
+    template_package: tuple[np.ndarray, list[tuple], np.ndarray, bool, float],
     r2_threshold: float,
 ) -> FeatureResult:
-    """Fits a pre-built template package tuple: (template_array, covariance_matrix, slope_transform)"""
-    template_arr, covariance_matrix, slope_transform = template_package
+    template_arr, contributing_keys, covariance_matrix, slope_transform, mad_threshold = template_package
 
     if template_arr.size < 3:
         raise ValueError("Template must contain at least 3 samples.")
 
-    center_idx = int(template_arr.size // 2)
+    L = template_arr.size
+    center_idx = int(L // 2)
     left = center_idx
-    right = template_arr.size - center_idx - 1
+    right = L - center_idx - 1
+
+    template_c = center_signal(template_arr)                    # (L,)
+    Cinv_t = np.linalg.solve(covariance_matrix, template_c)      # (L,)
+    denom = float(template_c @ Cinv_t)                           # template_c^T C^-1 template_c
 
     results = []
-    for (id_value, intensity), group in intermediate.group_by(["id", "intensity"]):
-        time = group["time"].to_numpy()
-        signal = group["voltage"].to_numpy()
+    for (id_value, channel, stimulus), group in intermediate.group_by(["id", "channel", "stimulus"]):
+        time = group["time"] - group["time"][0]
+        time = time.to_numpy()
+        signal = group["value"].to_numpy()
 
         if slope_transform:
             signal = np.gradient(signal, time)
 
-        start_idx, stop_idx = window_to_indices(time, search_window)
-        first_center = start_idx + left
-        last_center = stop_idx - right
+        windows = sliding_window_view(signal, L)                 # (K, L)
+        W_c = windows - windows.mean(axis=1, keepdims=True)       # each row centered
 
-        if last_center <= first_center:
-            raise ValueError("Search window is too small for this template.")
-        
-        best_score = -np.inf
-        best_result = {
+        Cinv_W = np.linalg.solve(covariance_matrix, W_c.T)        # (L, K)
+        numerator = template_c @ Cinv_W                            # (K,)
+
+        scale = numerator / denom                                  # (K,)
+        score = numerator - 0.5 * denom                             # (K,)
+
+        resid = W_c.T - np.outer(template_c, scale)                 # (L, K)
+        Cinv_resid = Cinv_W - np.outer(Cinv_t, scale)                # (L, K)
+        sse = np.sum(resid * Cinv_resid, axis=0)
+        sst = np.sum(W_c.T * Cinv_W, axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r2 = np.where(sst > 1e-20, 1.0 - sse / sst, np.nan)
+
+        posterior = estimate_posterior(r2)
+
+        best_k = np.argmax(score)
+        best_center = best_k + left
+        best_r2 = r2[best_k]
+
+        results.append({
             "id": id_value,
-            "intensity": intensity,
-            "feature_time": np.nan,
-            "scale": np.nan,
-            "score": np.nan,
-            "score_arr": np.array([]),
-            "r2": np.nan,
-            "posterior": np.nan,
-            "posterior_arr": np.array([]),
-            "detected": False,
-        }
+            "channel": channel,
+            "stimulus": stimulus,
+            "feature_time": float(time[best_center]),
+            "scale": float(scale[best_k]),
+            "score": float(score[best_k]),
+            "score_arr": score,
+            "r2": float(r2[best_k]),
+            "detected": bool(np.isfinite(best_r2) and best_r2 >= r2_threshold),
+            "posterior": float(posterior[best_k]),
+        })
 
-        score_list = []
+    combined = pl.DataFrame(results)
+    combined.config_meta.merge(intermediate)
 
-        for center in range(first_center, last_center):
-            snippet = signal[center - left : center + right + 1]
-
-            scale = estimate_scale_lda(snippet, template_arr, covariance_matrix)
-            score = estimate_score(snippet, scale * template_arr, covariance_matrix)
-
-            score_list.append(score)
-
-            if np.isnan(score) or score <= best_score:
-                continue
-
-            r2 = estimate_r2_lda(snippet, template_arr, covariance_matrix)
-            feature_time = float(time[center] * 1000)
-            detected = np.isfinite(r2) and r2 >= r2_threshold
-
-            best_score = score
-            best_result = {
-                "id": id_value,
-                "intensity": intensity,
-                "feature_time": feature_time,
-                "scale": float(scale),
-                "score": float(score),
-                "score_arr": np.array([]),
-                "r2": float(r2),
-                "posterior": np.nan,
-                "detected": detected,
-            }
-
-        score_arr = np.asarray(score_list, dtype=float)
-        best_result["score_arr"] = score_arr
-
-        posterior_arr = estimate_posterior(score_arr)
-        best_i = int(np.nanargmax(score_arr))
-        best_result["posterior"] = float(posterior_arr[best_i])
-        best_result["posterior_arr"] = posterior_arr
-
-        results.append(best_result)
-    
     return FeatureResult(
-        search_window=search_window,
-        template_window=template_window,
+        window=window,
         slope_transform=slope_transform,
+        mad_threshold=mad_threshold,
         r2_threshold=r2_threshold,
-        noise_window=noise_window,
         template=template_arr,
-        result=pl.DataFrame(results)
+        template_keys=contributing_keys,
+        result=combined,
     )
 
-
 def match_feature_lda(
-    train_df: DataFrame[IntermediateResult],
-    test_df: DataFrame[IntermediateResult],
-    template_window: tuple[float, float],
+    intermediate: DataFrame[IntermediateResult],
+    window: tuple[float, float],
     noise_window: tuple[float, float],
-    search_window: tuple[float, float],
-    template_intensities: list[int],
     r2_threshold: float,
     slope_transform: bool = False,
+    mad_threshold: float = 10.0,
 ) -> FeatureResult:
     """Builds a template from training data and fits it directly onto testing data."""
     template_package = build_template_lda(
-        intermediate=train_df,
-        template_window=template_window,
+        intermediate=intermediate,
+        window=window,
         noise_window=noise_window,
-        template_intensities=template_intensities,
-        slope_transform=slope_transform
+        slope_transform=slope_transform,
+        mad_threshold=mad_threshold,
     )
     return fit_template_lda(
-        intermediate=test_df,
-        template_window=template_window,
-        noise_window=noise_window,
-        search_window=search_window,
+        intermediate=intermediate,
+        window=window,
         template_package=template_package,
         r2_threshold=r2_threshold,
     )
