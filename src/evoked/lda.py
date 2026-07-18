@@ -14,65 +14,12 @@ def estimate_noise_covariance(noise_snippets: list[np.ndarray]) -> np.ndarray:
     variances[variances <= 1e-20] = 1e-20 
     return np.diag(variances)
 
-def estimate_score(windows: np.ndarray, template: np.ndarray, covariance_matrix: np.ndarray):
-    """Linear discriminant analysis score function, assuming equal lag priors."""
-    snippet_c = center_signal(windows)
-    template_c = center_signal(template)
-    
-    Cinv_s = np.linalg.solve(covariance_matrix, snippet_c)
-    Cinv_t = np.linalg.solve(covariance_matrix, template_c)
-
-    left = np.dot(template_c, Cinv_s)
-    right = 0.5 * np.dot(template_c, Cinv_t)
-
-    return left - right
-
-def estimate_r2_lda(windows: np.ndarray, template: np.ndarray, covariance_matrix: np.ndarray):
-    snippet_c = center_signal(windows)
-    template_c = center_signal(template)
-
-    scale = estimate_scale_lda(snippet_c, template_c, covariance_matrix)
-    pred = scale * template_c
-    resid = snippet_c - pred
-
-    Cinv_resid = np.linalg.solve(covariance_matrix, resid)
-    Cinv_s = np.linalg.solve(covariance_matrix, snippet_c)
-
-    sse = float(np.dot(resid, Cinv_resid))
-    sst = float(np.dot(snippet_c, Cinv_s))
-
-    if sst <= 1e-20:
-        return np.nan
-    return 1.0 - sse / sst
-
 def estimate_posterior(score_arr: np.ndarray) -> np.ndarray:
-    """Answers: Given the feature exists somewhere in this search window, which lag is most likely?"""
+    """Answers: Given the feature exists somewhere in this window, which lag is most likely?"""
     score_arr = np.asarray(score_arr, dtype=float)
     score_arr = score_arr - np.nanmax(score_arr)  # numerical stability, posterior unchanged
     exp_scores = np.exp(score_arr)
     return exp_scores / np.nansum(exp_scores)
-
-def estimate_scale_lda(
-    windows: np.ndarray,
-    template: np.ndarray,
-    covariance_matrix: np.ndarray,
-) -> float:
-    if windows.size != template.size:
-        raise ValueError("Snippet and template must have the same length to estimate covariance matrix for LDA.")
-    snippet_c = center_signal(windows)
-    template_c = center_signal(template)
-    if covariance_matrix.shape != (snippet_c.size, snippet_c.size):
-        raise ValueError("Covariance matrix has wrong shape.")
-
-    # Solve C^{-1} y and C^{-1} t without explicitly inverting
-    Cinv_s = np.linalg.solve(covariance_matrix, snippet_c)
-    Cinv_t = np.linalg.solve(covariance_matrix, template_c)
-
-    denom = float(np.dot(template_c, Cinv_t))
-    if denom <= 1e-20:
-        return np.nan
-
-    return np.dot(template_c, Cinv_s) / denom
 
 def build_template_lda(
     intermediate: DataFrame[IntermediateResult],
@@ -132,6 +79,7 @@ def fit_template_lda(
     template_package: tuple[np.ndarray, list[tuple], np.ndarray, bool, float],
     r2_threshold: float,
 ) -> FeatureResult:
+    fs = intermediate.config_meta.get_metadata().get("fs")
     template_arr, contributing_keys, covariance_matrix, slope_transform, mad_threshold = template_package
 
     if template_arr.size < 3:
@@ -169,25 +117,31 @@ def fit_template_lda(
         sse = np.sum(resid * Cinv_resid, axis=0)
         sst = np.sum(W_c.T * Cinv_W, axis=0)
         with np.errstate(invalid="ignore", divide="ignore"):
-            r2 = np.where(sst > 1e-20, 1.0 - sse / sst, np.nan)
+            r2 = np.where(sst > 1e-20, 1.0 - sse / sst, np.nan)             
 
-        posterior = estimate_posterior(r2)
+        whitened_corr = numerator / np.sqrt(denom * sst)   # signed, bounded [-1, 1]
+        best_k = int(np.nanargmax(whitened_corr))            # not r2
 
-        best_k = np.argmax(score)
+        # llr = scale * numerator - 0.5 * scale**2 * denom     
+        # posterior = estimate_posterior(whitened_corr)    # poorly specified
+
         best_center = best_k + left
         best_r2 = r2[best_k]
+        best_scale = scale[best_k]
+        best_amplitude = best_scale * np.ptp(template_c)
 
         results.append({
-            "id": id_value,
+            "id": id_value,           
             "channel": channel,
             "stimulus": stimulus,
             "feature_time": float(time[best_center]),
-            "scale": float(scale[best_k]),
+            "scale": best_scale,
+            "amplitude": best_amplitude,
             "score": float(score[best_k]),
             "score_arr": score,
             "r2": float(r2[best_k]),
             "detected": bool(np.isfinite(best_r2) and best_r2 >= r2_threshold),
-            "posterior": float(posterior[best_k]),
+            #"posterior": float(posterior[best_k]), # poorly specified
         })
 
     combined = pl.DataFrame(results)
@@ -207,7 +161,7 @@ def match_feature_lda(
     intermediate: DataFrame[IntermediateResult],
     window: tuple[float, float],
     noise_window: tuple[float, float],
-    r2_threshold: float,
+    r2_threshold: float = 0.8,
     slope_transform: bool = False,
     mad_threshold: float = 10.0,
 ) -> FeatureResult:
