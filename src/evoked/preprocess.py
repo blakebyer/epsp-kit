@@ -85,10 +85,10 @@ def detect_stim_artifact(
 def remove_stim_artifact(
     recording: DataFrame[RecordingData],
     artifact: str = "template",
-    mad_threshold: float = 6.0,
+    mad_threshold: float = 10.0,
     min_gap_s: float = 3e-3,
     max_duration_s: float = 2e-3,
-    padding_s: float = 5e-4,
+    padding_s: float = 1e-3,
     windows: list[tuple[int,int]] | None = None,
     **kwargs
 ) -> DataFrame[RecordingData]:

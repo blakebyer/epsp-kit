@@ -6,13 +6,13 @@ import numpy as np
 from evoked.base import RecordingResult, IntermediateResult, window_to_indices
 from evoked.ols import center_signal
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
 import matplotlib as mpl
 from matplotlib.lines import Line2D
+from matplotlib.backends.backend_pdf import PdfPages
 import math
 import warnings
 
-def plot_io_curve(recording_result: RecordingResult, features: list[str], stimuli: list[int], rc_params: dict | None = None):
+def plot_io_curve(recording_result: RecordingResult, features: list[str], stimuli: list[str], channel: int = 0, rc_params: dict | None = None):
     with plt.rc_context(rc_params):
         fig, axes = plt.subplots(ncols=len(features))
         
@@ -27,13 +27,21 @@ def plot_io_curve(recording_result: RecordingResult, features: list[str], stimul
                 continue
             
             rdata = r_result.result
-            rdata = rdata.filter(pl.col("stimulus").is_in(stimuli))
+            slope_transform = r_result.slope_transform
+            rdata = rdata.filter((pl.col("stimulus").is_in(stimuli)) & (pl.col("channel")==channel))
 
             stats = rdata.group_by("stimulus").agg(
-                pl.col("scale").mean().alias("mean"),
-                (pl.col("scale").std() / pl.col("scale").count().sqrt()).alias("sem"),
+                pl.col("amplitude").mean().alias("mean"),
+                (pl.col("amplitude").std() / pl.col("amplitude").count().sqrt()).alias("sem"),
             ).sort("stimulus")
             color_val = cmap(i / max(1, len(features) - 1))
+
+            try:
+                stats = stats.with_columns(pl.col("stimulus").cast(pl.Float64))
+            except pl.exceptions.InvalidOperationError:
+                pass
+
+            stats = stats.sort("stimulus")
 
             axes[i].errorbar(
                 stats['stimulus'].to_numpy(),
@@ -43,10 +51,10 @@ def plot_io_curve(recording_result: RecordingResult, features: list[str], stimul
                 color=color_val,
                 capsize=3
             )
-            axes[i].set_ylabel('Scale')
-            axes[i].set_xlabel('stimulus')
+            if slope_transform: axes[i].set_ylabel(f'Slope ({rdata.config_meta.get_metadata().get("value_unit")}/{rdata.config_meta.get_metadata().get("time_unit")})') 
+            else: axes[i].set_ylabel(f'Amplitude ({rdata.config_meta.get_metadata().get("value_unit")})')
+            axes[i].set_xlabel(f'Stimulus ({rdata.config_meta.get_metadata().get("stimulus_unit")})')
             axes[i].set_title(feature)
-            axes[i].set_xticks(range(0,700,100))
             axes[i].grid(alpha=0.3)
         
         fig.suptitle('IO Curves')
@@ -54,7 +62,7 @@ def plot_io_curve(recording_result: RecordingResult, features: list[str], stimul
 
         return fig, axes
 
-def plot_trace(intermediate: DataFrame[IntermediateResult], stimuli: list[str], id_value: str, channel: int, recording_result: RecordingResult | None = None, features: list[str] | None = None, annotated: bool = False, rc_params: dict | None = None):
+def plot_trace(intermediate: DataFrame[IntermediateResult], stimuli: list[str], id_value: str, channel: int = 0, recording_result: RecordingResult | None = None, features: list[str] | None = None, annotated: bool = False, rc_params: dict | None = None):
     with plt.rc_context(rc_params):
         intermediate = intermediate.filter(
             (pl.col("id")==id_value) &
@@ -95,7 +103,7 @@ def plot_trace(intermediate: DataFrame[IntermediateResult], stimuli: list[str], 
                         continue
 
                     feature_color = feature_cmap(j / max(1, len(features) - 1))
-                    half_width = (len(r_result.template) // 2) / float(rdata.config_meta.get_metadata().get("fs"))
+                    half_width = (len(r_result.template) // 2) / float(intermediate.config_meta.get_metadata().get("fs"))
 
                     for mt in rdata["feature_time"].to_numpy():
                         mask = (time >= mt - half_width) & (time <= mt + half_width)
@@ -105,7 +113,7 @@ def plot_trace(intermediate: DataFrame[IntermediateResult], stimuli: list[str], 
                         ax.scatter(mt, y, color=feature_color, edgecolors="black", zorder=6)
         
         trace_legend = ax.legend(
-            title=f"Stimulus ({rdata.config_meta.get_metadata().get("stimulus_unit")})",
+            title=f"Stimulus ({intermediate.config_meta.get_metadata().get("stimulus_unit")})",
             loc="lower right"
         )
         ax.add_artist(trace_legend)
@@ -131,8 +139,8 @@ def plot_trace(intermediate: DataFrame[IntermediateResult], stimuli: list[str], 
             )
 
         fig.suptitle("Evoked Field Potential")
-        ax.set_xlabel(f"Time ({rdata.config_meta.get_metadata().get("time_unit")})")
-        ax.set_ylabel(f"Response ({rdata.config_meta.get_metadata().get("value_unit")})")
+        ax.set_xlabel(f"Time ({intermediate.config_meta.get_metadata().get("time_unit")})")
+        ax.set_ylabel(f"Response ({intermediate.config_meta.get_metadata().get("value_unit")})")
         ax.grid(alpha=0.3)
         plt.tight_layout()
 
@@ -144,12 +152,14 @@ def plot_fit(
     features: list[str],
     stimulus: int,
     id_value: str,
+    channel: int = 0,
     rc_params: dict | None = None,
 ):
     with plt.rc_context(rc_params):
         idata = intermediate.filter(
                 (pl.col("id") == id_value) &
-                (pl.col("stimulus") == stimulus)
+                (pl.col("stimulus") == stimulus) &
+                (pl.col("channel")==channel)
         )
 
         if idata.is_empty():
@@ -313,7 +323,7 @@ def plot_fit(
 
         return fig, axes
 
-def plot_detected(recording_result: RecordingResult, features: list[str], rc_params: dict | None = None):
+def plot_detected(recording_result: RecordingResult, features: list[str], channel: int = 0, rc_params: dict | None = None):
     with plt.rc_context(rc_params):
         fig, ax = plt.subplots(figsize=(8,6))
 
@@ -326,18 +336,26 @@ def plot_detected(recording_result: RecordingResult, features: list[str], rc_par
 
             color_val = cmap(i / max(1, len(features) - 1))
             
-            detection = r_result.result
-            plot_df = (
+            detection = r_result.result.filter(pl.col("channel")==channel)
+            stats = (
                 detection
                 .group_by("stimulus")
                 .agg(
                     (pl.col("detected").mean() * 100).alias("percent_detected")
                 )
             ).sort("stimulus")
+
+            
+            try:
+                stats = stats.with_columns(pl.col("stimulus").cast(pl.Float64))
+            except pl.exceptions.InvalidOperationError:
+                pass
+
+            stats = stats.sort("stimulus")
             
             ax.plot(
-                plot_df["stimulus"].to_numpy(), 
-                plot_df["percent_detected"].to_numpy(),
+                stats["stimulus"].to_numpy(), 
+                stats["percent_detected"].to_numpy(),
                 marker="o", 
                 label=feature,
                 color=color_val
@@ -345,7 +363,7 @@ def plot_detected(recording_result: RecordingResult, features: list[str], rc_par
             ax.grid(alpha=0.3)
             
         # format shared axis
-        ax.set_xlabel("Stimulus stimulus (µA)")
+        ax.set_xlabel(f"Stimulus ({detection.config_meta.get_metadata().get("stimulus_unit")})")
         ax.set_ylabel("Detected (%)")
         ax.set_ylim(-5, 105)
         ax.legend(title="Features")
@@ -353,35 +371,46 @@ def plot_detected(recording_result: RecordingResult, features: list[str], rc_par
         plt.tight_layout()
 
         return fig, ax
-    
-def plot_all_files(intermediate, stimuli: list[int], max_per_page: int = 6, rc_params: dict | None = None):
-    """Quickly plot all files"""
-    figs = []
 
-    with plt.rc_context(rc_params):
+
+def plot_all_files(
+    intermediate,
+    stimuli: list[str],
+    output_path: str = "all_files.pdf",
+    max_per_page: int = 6,
+    rc_params: dict | None = None,
+):
+    """Plot all files and save each figure page to a multipage PDF."""
+
+    with plt.rc_context(rc_params), PdfPages(output_path) as pdf:
         unique_ids = intermediate["id"].unique()
         total_slices = len(unique_ids)
         num_pages = math.ceil(total_slices / max_per_page)
 
         nrows = 2
         ncols = math.ceil(max_per_page / nrows)
-        
+
         for page in range(num_pages):
             start_idx = page * max_per_page
             end_idx = min(start_idx + max_per_page, total_slices)
             page_ids = unique_ids[start_idx:end_idx]
-            
-            master_fig, master_axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(12, 10))
+
+            master_fig, master_axes = plt.subplots(
+                nrows=nrows,
+                ncols=ncols,
+                figsize=(12, 10),
+                squeeze=False,
+            )
             axes_flat = master_axes.flatten()
-            
+
             for idx, id_value in enumerate(page_ids):
                 temp_fig, temp_ax = plot_trace(
-                    intermediate=intermediate, 
-                    stimuli=stimuli, 
+                    intermediate=intermediate,
+                    stimuli=stimuli,
                     id_value=id_value,
-                    annotated=False
+                    annotated=False,
                 )
-                
+
                 target_ax = axes_flat[idx]
 
                 for line in temp_ax.get_lines():
@@ -391,19 +420,22 @@ def plot_all_files(intermediate, stimuli: list[int], max_per_page: int = 6, rc_p
                         color=line.get_color(),
                         label=line.get_label(),
                     )
-                    
-                target_ax.set_title(f"{id_value}", fontsize=10, fontweight="bold")
-                target_ax.legend(title="Stimulus stimulus (µA)")
-                target_ax.set_xlabel("Time (ms)")
-                target_ax.set_ylabel("Response (mV)")
+
+                target_ax.set_title(str(id_value), fontsize=10, fontweight="bold")
+                target_ax.legend(title="Stimulus (µA)")
+                target_ax.set_xlabel(
+                    f'Time ({intermediate.config_meta.get_metadata().get("time_unit")})'
+                )
+                target_ax.set_ylabel(
+                    f'Response ({intermediate.config_meta.get_metadata().get("value_unit")})'
+                )
                 target_ax.grid(alpha=0.3)
-                target_ax.xaxis.set_major_formatter(temp_ax.xaxis.get_major_formatter())
-                
+
                 plt.close(temp_fig)
-                
+
             for idx in range(len(page_ids), len(axes_flat)):
                 axes_flat[idx].set_visible(False)
-                
+
             master_fig.suptitle(
                 f"Evoked Field Potentials - Page {page + 1}",
                 fontsize=14,
@@ -411,6 +443,5 @@ def plot_all_files(intermediate, stimuli: list[int], max_per_page: int = 6, rc_p
             )
             master_fig.tight_layout()
 
-            figs.append(master_fig)
-
-    return figs
+            pdf.savefig(master_fig, bbox_inches="tight")
+            plt.close(master_fig)

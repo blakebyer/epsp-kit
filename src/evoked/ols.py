@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from scipy.signal import correlate
+from scipy.stats import t as t_dist
 import polars as pl
 from evoked.base import IntermediateResult, FeatureResult, window_to_indices
 from pandera.typing.polars import DataFrame
@@ -17,7 +18,7 @@ def linear_fit(time: np.ndarray, signal: np.ndarray):
     b_se = np.sqrt((sse/(len(time_c)-2))/np.sum(time_c**2))
     return b, b_se
 
-def estimate_scale_ols(snippet: np.ndarray, template: np.ndarray) -> float:
+def estimate_scale(snippet: np.ndarray, template: np.ndarray) -> float:
     snippet_c = center_signal(snippet)
     template_c = center_signal(template)
     if snippet_c.size != template_c.size:
@@ -47,7 +48,7 @@ def estimate_snr(
             return np.nan
         return float(amplitude / sigma_noise)
 
-def build_template_ols(
+def build_template(
     intermediate: DataFrame[IntermediateResult],
     window: tuple[float, float],
     noise_window: tuple[float, float],
@@ -84,7 +85,7 @@ def build_template_ols(
     return template_array, contributing_keys, mad_threshold, slope_transform
 
 
-def fit_template_ols(
+def fit_template(
     intermediate: DataFrame[IntermediateResult],
     window: tuple[float, float],
     template_package: tuple[np.ndarray, list, float, bool],
@@ -122,30 +123,38 @@ def fit_template_ols(
 
         csum = np.concatenate(([0.0], np.cumsum(signal)))
         csum2 = np.concatenate(([0.0], np.cumsum(signal ** 2)))
-        window_sum = csum[L:] - csum[:-L]        # (N - L + 1,)
-        window_sumsq = csum2[L:] - csum2[:-L]    # (N - L + 1,)
+        window_sum = csum[L:] - csum[:-L]
+        window_sumsq = csum2[L:] - csum2[:-L]
         sum_wc2 = window_sumsq - (window_sum ** 2) / L
 
         with np.errstate(invalid="ignore", divide="ignore"):
             corr = D / (np.sqrt(sum_wc2) * template_norm)
+            r2 = corr ** 2
+            t_stat = corr * np.sqrt((L - 2) / (1 - r2))
 
         best_k = int(np.nanargmax(corr))
+        n_lags = len(corr)
         best_center = best_k + left
         best_corr = float(corr[best_k])
         best_scale = float(D[best_k] / template_ss)
         best_r2 = best_corr ** 2                          # r2 == corr**2 for single-predictor OLS on centered data
+        best_t = t_stat[best_k]
         best_amplitude = best_scale * np.ptp(template_c)
+
+        p_naive = float(t_dist.sf(best_t, df=L - 2))
+        p_bonferroni = float(min(1.0, n_lags * p_naive))
 
         results.append({
             "id": id_value,
             "channel": channel,
             "stimulus": stimulus,
             "feature_time": float(time[best_center]),
-            "scale": best_scale, 
             "amplitude": best_amplitude, 
             "corr": best_corr, 
             "r2": best_r2,
-            "detected": bool(np.isfinite(best_r2) and best_r2 >= threshold),
+            "t_stat": best_t,
+            "p_value": p_bonferroni,
+            "detected": bool(p_bonferroni <= threshold),
         })
 
     combined = pl.DataFrame(results)
@@ -163,24 +172,24 @@ def fit_template_ols(
     )
 
 
-def match_feature_ols(
+def match_feature(
     intermediate: DataFrame[IntermediateResult],
     window: tuple[float, float],
     noise_window: tuple[float, float],
-    threshold: float = 0.8,
+    threshold: float = 0.05,
     slope_transform: bool = False,
     mad_threshold: float = 10.0,
 ) -> FeatureResult:
     """Builds a template from all high-SNR trials in `intermediate`, then fits it against
     every trial that didn't contribute to the template."""
-    template_package = build_template_ols(
+    template_package = build_template(
         intermediate=intermediate,
         window=window,
         noise_window=noise_window,
         slope_transform=slope_transform,
         mad_threshold=mad_threshold,
     )
-    return fit_template_ols(
+    return fit_template(
         intermediate=intermediate,
         window=window,
         template_package=template_package,
