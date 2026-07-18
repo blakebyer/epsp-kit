@@ -101,7 +101,7 @@ def load_config(
     
     return RecordingConfig.model_validate(metadata)
 
-def process_single_file(filename: str, recordings: dict, block_index: int) -> pl.DataFrame:
+def process_single_file(filename: str, recordings: dict, block_index: int, epoch: tuple[float,float] | None = None) -> pl.DataFrame:
     base_name = os.path.basename(filename)
     file_meta = recordings.get(base_name)
     
@@ -119,10 +119,29 @@ def process_single_file(filename: str, recordings: dict, block_index: int) -> pl
     
     file_dataframes = []
     for sweep_idx, segment in enumerate(block.segments):
+        events = segment.events[0] if segment.events else None
         current_stim = expanded_stims[sweep_idx]
+
+        if events is not None and len(events.times) > 0:
+            event_state = True
+            trigger_times = events.times
+        else:
+            event_state = False
+            trigger_times = [None]
+
         for channel_idx, signal in enumerate(segment.analogsignals):
-            time = np.asarray(signal.times, dtype=np.float64).squeeze()
-            value = np.asarray(signal, dtype=np.float64).squeeze()
+            for trigger_time in trigger_times:
+                if trigger_time is not None:
+                    lim_s, lim_e = epoch
+                    lim_start = lim_s * pq.second
+                    lim_end = lim_e * pq.second
+                    t0, t1 = (trigger_time + lim_start), (trigger_time + lim_end)
+                    sig_chunk = signal.time_slice(t0, t1)
+                else:
+                    sig_chunk = signal  # no events -> use full signal as-is
+
+                time = np.asarray(sig_chunk.times, dtype=np.float64).squeeze()
+                value = np.asarray(sig_chunk, dtype=np.float64).squeeze()
 
             sweep_df = (
                 pl.DataFrame({
@@ -146,6 +165,10 @@ def process_single_file(filename: str, recordings: dict, block_index: int) -> pl
                 fs=fs,
             )
             file_dataframes.append(sweep_df)
+    if event_state: 
+        print(f"Events found in {base_name}, epoching each segment")
+    else:
+        print(f"No events found in {base_name}, not epoching each segment")
     combined = pl.concat(file_dataframes, how="vertical")
     combined.config_meta.merge(*file_dataframes)
     return combined
@@ -157,6 +180,7 @@ def load_bulk(
 ) -> pl.DataFrame:
     config = load_config(config_path)
     recordings = config.metadata.recordings
+    epoch = config.analysis.epoch
 
     # fail before starting parallel work
     missing = [
@@ -174,7 +198,7 @@ def load_bulk(
 
     with ThreadPoolExecutor() as executor:
         futures = [
-            executor.submit(process_single_file, filename, recordings, block_index)
+            executor.submit(process_single_file, filename, recordings, block_index, epoch)
             for filename in filenames
         ]
 

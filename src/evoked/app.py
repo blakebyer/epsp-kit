@@ -4,7 +4,7 @@ import os
 import re
 from evoked.io import load_bulk, save_results_xlsx
 from evoked.preprocess import preprocess
-from evoked.ols import match_feature_ols
+from evoked.matched_filter import match_feature
 from evoked.plotting import plot_trace, plot_io_curve, plot_fit, plot_detected, plot_all_files
 from evoked.base import RecordingResult, PreprocessParams
 import matplotlib.pyplot as plt
@@ -142,7 +142,7 @@ with col2:
 
             results.add(
                 feature_name,
-                match_feature_ols(
+                match_feature(
                     train_df=train_prep,
                     test_df=test_prep,
                     template_window=template_window,

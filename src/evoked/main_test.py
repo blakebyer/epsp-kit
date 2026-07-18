@@ -3,9 +3,10 @@ from evoked.base import RecordingResult
 import polars_config_meta
 from evoked.io_test_copy import load_bulk
 from evoked.preprocess import preprocess
-from evoked.ols import match_feature_ols
+from evoked.matched_filter import match_feature
 from evoked.lda import match_feature_lda
-from evoked.plotting import plot_trace
+from evoked.glrt import match_feature_glrt
+from evoked.plotting import plot_trace, plot_io_curve, plot_detected, plot_all_files
 import polars as pl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -36,51 +37,63 @@ def main() -> None:
 
     test = load_bulk(all_files, met_path)
 
-    pre = preprocess(test, params={"padding_s":1e-3})
+    pre = preprocess(test)
 
     ca1_results = RecordingResult()
 
-    ca1_results.add("Fiber Volley", match_feature_ols(
+    ca1_results.add("Fiber Volley", match_feature(
         pre,
         window=(0.00125, 0.003),
         noise_window=(0.02324, 0.02499),
-        r2_threshold=0.8,
-        mad_threshold=200.0,
+        p_value_threshold=0.05,
+        snr_threshold=10.0,
         slope_transform=False
     ))
 
-    ca1_results.add("fEPSP", match_feature_ols(
+    ca1_results.add("fEPSP", match_feature(
         pre,
         window=(0.003, 0.0047),
         noise_window=(0.02324, 0.02499),
-        r2_threshold=0.4,
-           mad_threshold=25.0,
+        p_value_threshold=0.05,
+        snr_threshold=25.0,
         slope_transform=True
     ))
 
-    ca1_results.add("Population Spike", match_feature_ols(
-        pre,
-        window=(0.0045, 0.006),
-        r2_threshold=0.8,
-           mad_threshold=100.0,
-        noise_window=(0.02324, 0.02499),
-        slope_transform=False
-    ))
+    # ca1_results.add("Population Spike", match_feature(
+    #     pre,
+    #     window=(0.0045, 0.006),
+    #     threshold=0.8,
+    #     snr_threshold=100.0,
+    #     noise_window=(0.02324, 0.02499),
+    #     slope_transform=False
+    # ))
 
-    ca1_results.add("Fiber Volley LDA", match_feature_lda(
-        pre,
-         window=(0.00125, 0.003),
-         noise_window=(0.02324, 0.02499),
-        r2_threshold=0.8,
-        mad_threshold=10.0,
-        slope_transform=False
-    ))
+    # ca1_results.add("Fiber Volley LDA", match_feature_lda(
+    #     pre,
+    #     window=(0.00125, 0.003),
+    #     noise_window=(0.02324, 0.02499),
+    #     threshold=0.8,
+    #     snr_threshold=200.0,
+    #     slope_transform=False
+    # ))
 
-    print(ca1_results.results.get("Fiber Volley LDA").result.filter(pl.col("id")=="2026_05_28_0016").select(["r2", "stimulus"]))
+    # ca1_results.add("Fiber Volley GLRT", match_feature_glrt(
+    #     pre,
+    #     window=(0.00125, 0.003),
+    #     noise_window=(0.02324, 0.02499),
+    #     threshold=0.05,
+    #     snr_threshold=10.0,
+    #     slope_transform=False
+    # ))
+
+    print(ca1_results)
     # print(ca1_results.results.get("Fiber Volley").result.config_meta.get_metadata())
 
-    ca1_trace_fig, ca1_trace_ax = plot_trace(pre, recording_result=ca1_results, id_value='2026_06_01_0000', channel=0, features=["Fiber Volley LDA", "Fiber Volley"], stimuli=["25", "50", "75", "150", "200", "250", "300", "400", "500", "600"], annotated=True)
-    ca1_trace_fig.savefig("ca1_testfig1.png", dpi=600, bbox_inches="tight")
+    ca1_trace_fig, ca1_trace_ax = plot_trace(pre, recording_result=ca1_results, id_value='2026_06_01_0000', channel=0, features=["Fiber Volley", "fEPSP"], stimuli=["25", "50", "75", "150", "200", "250", "300", "400", "500", "600"], annotated=True)
+    # ca1_io_fig, _ = plot_io_curve(ca1_results, features=["Fiber Volley", "fEPSP", "Fiber Volley GLRT"], stimuli=["25", "50", "75", "150", "200", "250", "300", "400", "500", "600"])
+    # ca1_detected_fig, _ = plot_detected(ca1_results, features=["Fiber Volley", "fEPSP", "Fiber Volley LDA"])
+    ca1_trace_fig.savefig("ca1_testfig8.png", dpi=600, bbox_inches="tight")
+    # plot_all_files(pre, stimuli=["25", "50", "75", "150", "200", "250", "300", "400", "500", "600"])
 
     # template = [ 0.0459179 ,  0.03676628,  0.01975369, -0.0015044 , -0.02067768,
     #    -0.03544458, -0.04895909, -0.0631387 , -0.07910559]

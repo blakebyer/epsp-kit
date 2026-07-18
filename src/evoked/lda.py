@@ -5,7 +5,7 @@ from numpy.lib.stride_tricks import sliding_window_view
 import polars as pl
 from evoked.base import IntermediateResult, FeatureResult, window_to_indices
 from pandera.typing.polars import DataFrame
-from evoked.ols import center_signal, estimate_snr
+from evoked.matched_filter import center_signal, estimate_snr
 
 def estimate_noise_covariance(noise_snippets: list[np.ndarray]) -> np.ndarray:
     """Estimate diagonal noise covariance matrix"""
@@ -26,7 +26,7 @@ def build_template_lda(
     window: tuple[float, float],
     noise_window: tuple[float, float],
     slope_transform: bool = False,
-    mad_threshold: float = 10.0,
+    snr_threshold: float = 10.0,
 ) -> tuple[np.ndarray, list[tuple], np.ndarray, bool, float]:
     """Builds a template, covariance matrix, and returns it alongside its slope_transform state."""
     fs = intermediate.config_meta.get_metadata().get("fs")
@@ -59,18 +59,18 @@ def build_template_lda(
         snr = estimate_snr(template_time, template, slope_transform, noise)
         if snr > max_snr:
             max_snr = snr
-        if snr < mad_threshold:
+        if snr < snr_threshold:
             continue
         template_snippets.append(signal[template_start:template_stop])
         noise_snippets.append(signal[noise_start:noise_stop])
         contributing_keys.append((id_value, channel, stimulus))
 
     if len(template_snippets) == 0:
-        raise ValueError(f"No templates with SNR>={mad_threshold} were found. Max SNR={max_snr:.3f}. Try lowering the threshold.")
+        raise ValueError(f"No templates with SNR>={snr_threshold} were found. Max SNR={max_snr:.3f}. Try lowering the threshold.")
     template_array = np.mean(np.vstack(template_snippets), axis=0)
     covariance_matrix = estimate_noise_covariance(noise_snippets)
     
-    return template_array, contributing_keys, covariance_matrix, slope_transform, mad_threshold
+    return template_array, contributing_keys, covariance_matrix, slope_transform, snr_threshold
 
 
 def fit_template_lda(
@@ -80,7 +80,7 @@ def fit_template_lda(
     r2_threshold: float,
 ) -> FeatureResult:
     fs = intermediate.config_meta.get_metadata().get("fs")
-    template_arr, contributing_keys, covariance_matrix, slope_transform, mad_threshold = template_package
+    template_arr, contributing_keys, covariance_matrix, slope_transform, snr_threshold = template_package
 
     if template_arr.size < 3:
         raise ValueError("Template must contain at least 3 samples.")
@@ -150,7 +150,7 @@ def fit_template_lda(
     return FeatureResult(
         window=window,
         slope_transform=slope_transform,
-        mad_threshold=mad_threshold,
+        snr_threshold=snr_threshold,
         r2_threshold=r2_threshold,
         template=template_arr,
         template_keys=contributing_keys,
@@ -163,7 +163,7 @@ def match_feature_lda(
     noise_window: tuple[float, float],
     r2_threshold: float = 0.8,
     slope_transform: bool = False,
-    mad_threshold: float = 10.0,
+    snr_threshold: float = 10.0,
 ) -> FeatureResult:
     """Builds a template from training data and fits it directly onto testing data."""
     template_package = build_template_lda(
@@ -171,7 +171,7 @@ def match_feature_lda(
         window=window,
         noise_window=noise_window,
         slope_transform=slope_transform,
-        mad_threshold=mad_threshold,
+        snr_threshold=snr_threshold,
     )
     return fit_template_lda(
         intermediate=intermediate,

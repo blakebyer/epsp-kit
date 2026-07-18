@@ -144,7 +144,7 @@ class Metadata(EvokedBaseModel):
         return self
     
 class Analysis(EvokedBaseModel):
-    epoch: tuple[float, float]
+    epoch: Optional[tuple[float, float]]
     features: dict[str, Any] = Field(default_factory=dict)
 
 class RecordingConfig(EvokedBaseModel):
@@ -165,19 +165,18 @@ class FitResult(pa.DataFrameModel):
     stimulus: Series[str]
     feature_time: Series[float] 
     scale: Series[float]
-    corr: Optional[Series[float]] 
-    corr_arr: Optional[Series[list[float]]]
-    score: Optional[Series[float]]
-    score_arr: Optional[Series[list[float]]]
-    r2: Series[float]
+    amplitude: Series[float]
+    corr: Optional[Series[float]]
+    r2: Optional[Series[float]]
+    t_stat: Optional[Series[float]]
+    p_value: Optional[Series[float]]
     detected: Series[bool]
-    posterior: Optional[Series[float]] 
 
 class FeatureResult(EvokedBaseModel):
     window: tuple[float, float]
     slope_transform: bool
-    mad_threshold: float
-    r2_threshold: float
+    snr_threshold: float
+    p_value_threshold: float
     template: np.ndarray 
     template_keys: list[tuple]
     result: DataFrame[FitResult]

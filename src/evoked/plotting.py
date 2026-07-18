@@ -4,7 +4,7 @@ from pandera.typing.polars import DataFrame
 import polars as pl
 import numpy as np
 from evoked.base import RecordingResult, IntermediateResult, window_to_indices
-from evoked.ols import center_signal
+from evoked.matched_filter import center_signal
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.lines import Line2D

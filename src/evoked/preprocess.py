@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from evoked.base import RecordingData, IntermediateResult
-from evoked.ols import estimate_scale_ols
+from evoked.matched_filter import center_signal
 import numpy as np
 import polars as pl
 import polars_config_meta
@@ -30,7 +30,7 @@ def baseline_correct(recording: DataFrame[RecordingData]) -> DataFrame[Recording
 def detect_stim_artifact(
     value: np.ndarray,
     fs: float,
-    mad_threshold: float,
+    snr_threshold: float,
     min_gap_s: float,
     max_duration_s: float,
     padding_s: float,
@@ -45,7 +45,7 @@ def detect_stim_artifact(
     med = np.median(dv)
     mad = np.median(np.abs(dv - med))
     sigma = 1.4826 * mad
-    threshold = mad_threshold * sigma if sigma > 0 else np.finfo(float).eps
+    threshold = snr_threshold * sigma if sigma > 0 else np.finfo(float).eps
 
     hit = np.flatnonzero(np.abs(dv) > threshold)
     if hit.size == 0:
@@ -85,7 +85,7 @@ def detect_stim_artifact(
 def remove_stim_artifact(
     recording: DataFrame[RecordingData],
     artifact: str = "template",
-    mad_threshold: float = 10.0,
+    snr_threshold: float = 10.0,
     min_gap_s: float = 3e-3,
     max_duration_s: float = 2e-3,
     padding_s: float = 1e-3,
@@ -107,7 +107,7 @@ def remove_stim_artifact(
             value = group["value"].to_numpy().copy()
             
             if windows is None:
-                windows = detect_stim_artifact(value, fs, mad_threshold, min_gap_s, max_duration_s, padding_s)
+                windows = detect_stim_artifact(value, fs, snr_threshold, min_gap_s, max_duration_s, padding_s)
 
             for start_idx, stop_idx in windows:
                 if artifact == "zero":
@@ -133,14 +133,17 @@ def remove_stim_artifact(
             # detect once, on the group-average trace, so every sweep/channel
             # shares identical windows - required for OLS
             avg_value = np.mean(values, axis=0)
-            windows = detect_stim_artifact(avg_value, fs, mad_threshold, min_gap_s, max_duration_s, padding_s)
+            windows = detect_stim_artifact(avg_value, fs, snr_threshold, min_gap_s, max_duration_s, padding_s)
 
             for start_idx, stop_idx in windows:
                 snippets = np.array([v[start_idx:stop_idx] for v in values])
                 artifact_template = np.mean(snippets, axis=0)
 
                 for i, snippet in enumerate(snippets):
-                    scale = estimate_scale_ols(snippet, artifact_template)
+                    template_c = center_signal(artifact_template)
+                    template_ss = np.dot(template_c, template_c)
+                    D = np.dot(template_c, snippet)
+                    scale = float(D / template_ss)
                     if not np.isnan(scale):
                         values[i][start_idx:stop_idx] = snippet - scale * artifact_template
 
