@@ -1,53 +1,53 @@
-# evoked
+# evoked #
 evoked is a package for analyzing evoked local field potentials using template matching.
 
 ## What it does
-- Load ABF/CSV recordings into tidy polars DataFrames
+- Load electrophysiology recordings into tidy polars DataFrames
 - Preprocesses tidy data (baseline correction, stimulus artifact removal, averaging)
 - Matches features (e.g., fiber volley, fEPSP slope, population spike)
 - Renders and save common plots (e.g., IO curves)
 
 ## Installation
-### 1. [Install Python >= 3.13](https://www.python.org/downloads/)
+### 1. [Install Python $\geq$ 3.12](https://www.python.org/downloads/)
 Check installation:
 ```bash
-python3.13 --version
+python --version
 ```
 
 ### 2. Install Poetry
 ```bash
-python3.13 -m pip install poetry
+python -m pip install poetry
 ```
 ### 3. Install evoked
 ```bash
 git clone https://github.com/blakebyer/evoked.git
 cd evoked
-poetry env use python3.13
+poetry env use python3.12 # or preferred version
 poetry install
 ```
 
 ## Usage
-### Python API ###
-The Python API is recommended for heavy users.
-
-Edit `main.py` and run:
+### Command Line (Recommended)
+Run evoked from the CLI:
 ```bash
-poetry run python -m evoked.main
-```
-### Jupyter Notebook ###
-To run the example notebook:
+> poetry run evoked-analyze --help
+usage: evoked.analyze [-h] [--data PATH] [--config PATH] [--output PATH] [--describe-config]
 
-```bash
-poetry run jupyter notebook
+Run the evoked analysis pipeline end-to-end from a YAML config: load raw recordings, preprocess, run feature detection, render plots, and save results.
+
+options:
+  -h, --help         show this help message and exit
+  --data PATH        Directory containing data files
+  --config PATH      Path to YAML config file
+  --output PATH      Directory to save results into (default: current directory)
+  --describe-config  Print the expected config.yml structure and exit
 ```
-Select [examples/analysis_2026_06_19.ipynb](https://github.com/blakebyer/evoked/blob/main/src/evoked/examples/analysis_2026_06_19.ipynb), follow instructions, and run it. 
 
 ### Web App ###
-evoked comes with a basic streamlit web app, which can be run by:
+evoked comes with a basic nice gui web/desktop app, which can be run by:
 ```bash
-poetry run streamlit run src/evoked/app.py
+poetry run flet run app.py
 ```
 
 ## Output
 - Results are written to one Excel (.xlsx) file with `save_results_xlsx` or JSON file with `save_results_json`.
-- Each workbook contains sheets: `Pipeline` containing pipeline configuration information and one sheet per feature with feature parameters and results.

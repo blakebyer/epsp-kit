@@ -1,0 +1,39 @@
+experiment: 
+  name: fEPSP experiment
+  description: Three CA1 slices
+
+metadata:
+  default:
+    stimulus: [25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600]
+    layout: segments
+    order: grouped
+    repeats: 3
+  recordings:
+    -  2025_03_02_0000.abf
+    -  2025_03_02_0003.abf
+    -  2025_03_02_0010.abf
+
+analysis:
+  default:
+    noise_window: [0.02324, 0.02499]
+  features:
+    Fiber volley:
+      window: [0.00125, 0.003]
+    fEPSP:
+      window: [0.0025, 0.004]
+    Population spike:
+      window: [0.005, 0.0075]
+
+plotting:
+  plots:
+    io:
+      channel: 0
+      features: ["Fiber volley", "fEPSP"]
+      stimuli: [200, 400, 600]
+    trace:
+      id: "2025_03_02_0000"
+      channel: 0
+      features: ["Fiber volley"]
+      stimuli: [100, 200, 300, 500]
+      annotated: True
+
