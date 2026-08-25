@@ -2,8 +2,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-from evoked.base import FeatureResult, RecordingResult
-from evoked.calibration import calibrate, calibrate_all, load_truth
+from evoked.results import RecordingResult
+from evoked.cli.calibration import calibrate, calibrate_all, load_truth
 
 
 def _pred():

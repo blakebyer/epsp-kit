@@ -16,9 +16,9 @@ from evoked.io import (
     resolve_filenames,
     save_results_xlsx,
     build_channel_dataframe,
-    load_results_json,
+    load_results_yaml,
     process_single_file,
-    save_results_json,
+    save_results_yaml,
     load_single_file,
 )
 
@@ -201,10 +201,12 @@ def test_process_continuous_mne(monkeypatch):
     assert out["time"].list.len().unique().to_list() == [6]
 
 
-def test_results_json_roundtrip(tmp_path, recording_result):
-    path = tmp_path / "results.json"
-    save_results_json(recording_result, str(path))
-    loaded = load_results_json(str(path))
+def test_results_yaml_roundtrip(tmp_path, recording_result):
+    path = tmp_path / "results.yaml"
+
+    save_results_yaml(recording_result, str(path))
+    loaded = load_results_yaml(str(path))
+
     assert loaded.results.keys() == recording_result.results.keys()
     assert loaded.get("fEPSP").result.shape == recording_result.get("fEPSP").result.shape
 

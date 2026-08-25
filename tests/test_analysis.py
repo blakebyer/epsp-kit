@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from evoked.analysis import clean_config, describe_config, run_analysis, run_plots, run_feature
+from evoked.cli.analysis import clean_config, describe_config, run_analysis, run_plots, run_feature
 from evoked.base import Feature, RecordingConfig, TracePlot, MultiChannelPlot, IOPlot, DetectedPlot
 
 

@@ -1,34 +1,69 @@
 from __future__ import annotations
 
-from evoked.base import RecordingData, IntermediateResult, col_to_2d, col_from_2d
-from evoked.matched_filter import estimate_scale, window_to_indices
+from evoked.base import RecordingData
+from evoked.algorithms.linear import estimate_scale
 import numpy as np
-import polars as pl
-import polars_config_meta
-from pandera.typing.polars import DataFrame
-from typing import Literal
-from scipy.signal import savgol_filter, butter, filtfilt
+import quantities as pq
+from typing import Literal, Optional
+from scipy.signal import savgol_filter as savgol, butter, filtfilt
 from scipy.ndimage import uniform_filter1d
 
 
-# try to streamline dependencies, such as having fewer xlsx readers/writers, get rid of scikit-learn or make it an extra for calibrate
-# fix GLRT, test CCEP recipes, add tests/ folder and tests, expand docs, delete unneeded data, push to GitHub! Github actions deployments/versions
-
-def baseline_correct(recording: RecordingData, baseline_window: tuple = (0.0,1e-3), **kwargs) -> DataFrame[RecordingData]:
+def baseline_correct(
+        recording: RecordingData, 
+        baseline_window: Optional[tuple[float, float]] = (0.0, 1e-3)) -> RecordingData:
     if baseline_window is None:
         return recording
 
-    fs = recording.config_meta.get_metadata().get("fs").magnitude
-    time = col_to_2d(recording, "time")
-    t0 = time[0] - time[0, 0]  
-    start, stop = window_to_indices(t0, baseline_window, fs)
+    baseline = recording.values(baseline_window).mean(
+        axis=1,
+        keepdims=True
+    )
 
-    value = col_to_2d(recording, "value")
-    baseline = value[:, start:stop].mean(axis=1, keepdims=True)
-    corrected = value - baseline
+    return recording.map_values(
+        lambda value: value - baseline
+    )
 
-    return recording.with_columns(col_from_2d(corrected, "value"))
+def resample(
+    recording: RecordingData,
+    target_frequency: float,
+) -> RecordingData:
+    """Resamples recording to a lower frequency.
 
+    Args:
+        recording (RecordingData): 
+        target_frequency (float): 
+
+    Raises:
+        ValueError: `target_frequency` must be > 0
+
+    Returns:
+        RecordingData:
+    """
+    current_frequency = float(
+        recording.sampling_rate.rescale(pq.Hz).magnitude
+    )
+
+    if target_frequency <= 0:
+        raise ValueError("target_frequency must be > 0.")
+
+    if target_frequency >= current_frequency:
+        return recording
+
+    segments = [
+        recording._clone_segment(
+            seg,
+            seg.analogsignals[0].resample(
+                sampling_rate=target_frequency * pq.Hz
+            ),
+        )
+        for seg in recording.segments
+    ]
+
+    return RecordingData(
+        segments=segments,
+        trials=recording.trials,
+    )
 
 def detect_stim_artifact(
     value: np.ndarray,
@@ -91,154 +126,207 @@ def detect_stim_artifact(
  
     return artifact_windows
  
-def remove_stim_artifact(
-    recording: DataFrame[RecordingData],
-    artifact: Literal["zero", "interp", "template", "none"] = "interp",
+def remove_artifacts(
+    recording: RecordingData,
+    artifact: Literal["zero", "interp", "template", "none"] = "template",
     snr_threshold: float = 10.0,
     min_gap_s: float = 3e-3,
     max_duration_s: float = 4e-3,
     padding_s: float = 1e-3,
-    artifact_windows: list[tuple[float,float]] | None = None,  # in seconds, relative to trace start
+    artifact_windows: Optional[list[tuple[float, float]]] = None,
     biphasic: bool = True,
-    **kwargs
-) -> DataFrame[RecordingData]:
+) -> RecordingData:
+    if artifact not in ["zero", "interp", "template", "none"]:
+        raise ValueError(
+            "artifact must be one of: none, zero, interp, template"
+        )
+    
     if artifact == "none":
         return recording
 
-    fs = recording.config_meta.get_metadata().get("fs").magnitude
- 
-    # convert artifact windows to int
+    fs = float(recording.sampling_rate.rescale(pq.Hz).magnitude)
+    time = np.asarray(recording.times().rescale(pq.s).magnitude)
+
     if artifact_windows is not None:
-        artifact_windows = [(int(round(start * fs)), int(round(stop * fs))) for start, stop in artifact_windows]
- 
+        artifact_windows = [
+            (int(round(start * fs)), int(round(stop * fs)))
+            for start, stop in artifact_windows
+        ]
+
     if artifact in ["zero", "interp"]:
-        time = col_to_2d(recording, "time")
-        value = col_to_2d(recording, "value").copy()
 
-        for i in range(value.shape[0]):
-            windows = artifact_windows or detect_stim_artifact(
-                value[i], fs, snr_threshold, min_gap_s, max_duration_s, padding_s, biphasic
+        def remove(value: np.ndarray) -> np.ndarray:
+            value = value.copy()
+
+            for trial in range(value.shape[0]):
+                for ch in range(value.shape[2]):
+                    trace = value[trial, :, ch]
+
+                    if artifact_windows is None:
+                        windows = detect_stim_artifact(
+                            trace,
+                            fs,
+                            snr_threshold,
+                            min_gap_s,
+                            max_duration_s,
+                            padding_s,
+                            biphasic,
+                        )
+                    else:
+                        windows = artifact_windows
+
+                    for start, stop in windows:
+                        if artifact == "zero":
+                            trace[start:stop] = 0.0
+                        else:
+                            trace[start:stop] = np.interp(
+                                time[start:stop],
+                                [time[start - 1], time[stop]],
+                                [trace[start - 1], trace[stop]],
+                            )
+
+            return value
+
+        return recording.map_values(remove)
+
+    if artifact == "template":
+
+        def remove_template(value: np.ndarray) -> np.ndarray:
+            value = value.copy()
+
+            for _, group in recording.trials.group_by(
+                ["id", "stimulus"],
+                maintain_order=True,
+            ):
+                indices = group["trial_index"].to_numpy()
+
+                for ch in range(value.shape[2]):
+                    traces = value[indices, :, ch]
+
+                    if artifact_windows is None:
+                        windows = detect_stim_artifact(
+                            traces.mean(axis=0),
+                            fs,
+                            snr_threshold,
+                            min_gap_s,
+                            max_duration_s,
+                            padding_s,
+                            biphasic,
+                        )
+                    else:
+                        windows = artifact_windows
+
+                    for start, stop in windows:
+                        snippets = traces[:, start:stop]
+                        template = snippets.mean(axis=0)
+
+                        for i, snippet in enumerate(snippets):
+                            scale = estimate_scale(snippet, template)
+
+                            if np.isfinite(scale):
+                                traces[i, start:stop] = (
+                                    snippet - scale * template
+                                )
+
+                    value[indices, :, ch] = traces
+
+            return value
+
+        return recording.map_values(remove_template)
+
+def uniform_filter(recording: RecordingData, size: int = 7):
+    return recording.map_values(
+            lambda x: uniform_filter1d(
+                x, 
+                size=size,
+                axis=1,
+                mode="nearest"
             )
-            for start_idx, stop_idx in windows:
-                if artifact == "zero":
-                    value[i, start_idx:stop_idx] = 0.0
-                else:
-                    value[i, start_idx:stop_idx] = np.interp(
-                        time[i, start_idx:stop_idx],
-                        [time[i, start_idx - 1], time[i, stop_idx]],
-                        [value[i, start_idx - 1], value[i, stop_idx]],
-                    )
+        )
 
-        return recording.with_columns(col_from_2d(value, "value"))
- 
-    elif artifact == "template":
-        groups = []
-        for _, group in recording.group_by(["id", "stimulus", "channel"]):
-            values = col_to_2d(group, "value").copy()
-            windows = artifact_windows or detect_stim_artifact(
-                values.mean(axis=0), fs, snr_threshold, min_gap_s, max_duration_s, padding_s, biphasic
-            )
-            for start, stop in windows:
-                snippets = values[:, start:stop]
-                template = snippets.mean(axis=0)
-                template_c = template - template.mean()
-                for i, snippet in enumerate(snippets):
-                    scale = estimate_scale(snippet, template)
-                    if np.isfinite(scale):
-                        values[i, start:stop] = snippet - scale * template_c
-            groups.append(group.with_columns(col_from_2d(values, "value")))
+def savgol_filter(recording: RecordingData, polyorder: int = 3, window_length: int = 11):
+    if window_length % 2 == 0:
+        window_length += 1
+    
+    return recording.map_values(
+        lambda x: savgol(
+            x,
+            window_length=window_length,
+            polyorder=polyorder,
+            axis=1
+        )
+    )
 
-        combined = pl.concat(groups, how="vertical")
-        combined.config_meta.merge(recording)
-        return combined
+def butter_filter(recording: RecordingData, order: int = 2, cutoff: tuple | float = 2000.0, btype: str = "low"):
+    fs = recording.sampling_rate
+    b, a = butter(order, cutoff, btype=btype, fs=fs)
 
-def average_traces(recording):
-    rows = {"id": [], "channel": [], "stimulus": [], "time": [], "value": []}
-    for (stimulus, id_, channel), group in recording.group_by(["stimulus", "id", "channel"]):
-        values = col_to_2d(group, "value")
-        time = col_to_2d(group, "time")[0]
-        rows["id"].append(id_)
-        rows["channel"].append(channel)
-        rows["stimulus"].append(stimulus)
-        rows["time"].append(time)
-        rows["value"].append(values.mean(axis=0))
+    return recording.map_values(
+        lambda x: filtfilt(b, a, x, axis=1)
+    )
 
-    combined = pl.DataFrame({
-        "id": pl.Series(rows["id"], dtype=pl.String),
-        "channel": pl.Series(rows["channel"], dtype=pl.Int32),
-        "stimulus": pl.Series(rows["stimulus"], dtype=pl.String),
-        "time": col_from_2d(np.stack(rows["time"]), "time"),
-        "value": col_from_2d(np.stack(rows["value"]), "value"),
-    })
-    combined.config_meta.merge(recording)
-    return combined
 
-def apply_smoothing(intermediate: DataFrame[IntermediateResult], 
-                    smoothing: str = "savgol",
-                    smoothing_params: dict = {
-                        "size":7,
-                        "polyorder":3,
-                        "window_length":11,
-                        "cutoff":2000.0,
-                        "order":2
-                    },
-                    artifact_windows: list[tuple[float, float]] | None = None,
-                    **kwargs
-) -> DataFrame[IntermediateResult]:
-    if smoothing == "none":
-            return intermediate
-    elif smoothing not in ["uniform", "savgol", "butter"]:
+def apply_smoothing(
+    recording: RecordingData,
+    smoothing: str = "savgol",
+    smoothing_params: dict = {
+        "size":7,
+        "polyorder":3,
+        "window_length":11,
+        "cutoff":2000.0,
+        "order":2
+    },
+) -> RecordingData:
+    if smoothing not in ["none", "uniform", "savgol", "butter"]:
         raise ValueError(
             "Smoothing method must be one of: none, uniform, savgol, or butter."
         )
 
-    time = col_to_2d(intermediate, "time")
-    value = col_to_2d(intermediate, "value")
-
-    if artifact_windows:
-        window_array = np.asarray(artifact_windows, dtype=float)
-        t = time[0]
-        excluded = np.any(
-            (t[:, None] >= window_array[:, 0])
-            & (t[:, None] < window_array[:, 1]),
-            axis=1,
-        )
-    else:
-        excluded = np.zeros(value.shape[1], dtype=bool)
+    if smoothing == "none":
+        return recording
+    
 
     if smoothing == "uniform":
         size = smoothing_params.get("size")
-        filtered_value = uniform_filter1d(value,size=size,mode="nearest", axis=-1)
-    elif smoothing == "savgol":
+        return recording.map_values(
+            lambda x: uniform_filter1d(
+                x, 
+                size=size,
+                axis=1,
+                mode="nearest"
+            )
+        )
+    if smoothing == "savgol":
         polyorder = smoothing_params.get("polyorder")
         window_length = smoothing_params.get("window_length")
         if window_length % 2 == 0:
             window_length += 1
-        filtered_value = savgol_filter(value, window_length=window_length, polyorder=polyorder, axis=-1)
-    elif smoothing == "butter":
-        def butter_lowpass(y: np.ndarray, cutoff: float, fs: float, order: int):
-            b, a = butter(order, cutoff, btype='low', fs=fs)
-            return filtfilt(b, a, y, axis=-1)
-        cutoff = smoothing_params.get("cutoff")
+
+        return recording.map_values(
+            lambda x: savgol_filter(
+                x,
+                window_length=window_length,
+                polyorder=polyorder,
+                axis=1
+            )
+        )
+    if smoothing == "butter":
+        fs = float(recording.sampling_rate.rescale(pq.Hz).magnitude)
         order = smoothing_params.get("order")
-        fs = intermediate.config_meta.get_metadata().get("fs")
-        filtered_value = butter_lowpass(value, cutoff=cutoff, fs=fs, order=order)
+        cutoff = smoothing_params.get("cutoff")
+        b, a = butter(order, cutoff, btype='low', fs=fs)
 
-    # replace with original values to prevent ringing at artifact edges
-    filtered_value[:, excluded] = value[:, excluded]
-
-    combined = intermediate.with_columns(col_from_2d(filtered_value, "value"))
-    combined.config_meta.merge(intermediate)
-    combined.config_meta.set(artifact_windows=artifact_windows)
-    return combined
+        return recording.map_values(
+            lambda x: filtfilt(b, a, x, axis=1)
+        )
 
 def preprocess(
-        recording: DataFrame[RecordingData], 
-        params: dict | None = None
-) -> DataFrame[IntermediateResult]:
+        recording: RecordingData, 
+        params: Optional[dict] = None
+) -> RecordingData:
     params = params or {}
     recording = baseline_correct(recording, **params)
-    recording = remove_stim_artifact(recording, **params)
-    recording = average_traces(recording)
+    recording = remove_artifacts(recording, **params)
+    recording = recording.average_by(["id", "stimulus"])
     recording = apply_smoothing(recording, **params)
     return recording

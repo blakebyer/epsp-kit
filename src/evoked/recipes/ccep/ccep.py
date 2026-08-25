@@ -3,7 +3,7 @@ import os
 from evoked.base import RecordingResult
 from evoked.io import resolve_filenames, load_bulk, save_results_xlsx
 from evoked.preprocessing import preprocess
-from evoked.matched_filter import match_feature
+from evoked.algorithms.linear import match_feature
 
 data_path = r"C:\Users\bbyer\OneDrive\Documents\UniversityofKentucky\BachstetterLab\ccep_data"
 

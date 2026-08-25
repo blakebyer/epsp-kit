@@ -1,5 +1,5 @@
 # CCEP
-1. Download the [CCEP data]( https://openneuro.org/datasets/ds004080/versions/1.0.1) participant 31, 50, and 68 files. 
+1. Download the [CCEP data](https://openneuro.org/datasets/ds004080/versions/1.0.1) participant 31, 50, and 68 files. 
 
 2. Ensure the data is in the following file tree format for compliance with the [Brain Imaging Data Structure (BIDS)](https://bids-specification.readthedocs.io/en/stable/). In general, it follows the hierarchy `root/sub-*/ses-*/<datatype>/`: 
     ```

@@ -4,7 +4,7 @@ import polars as pl
 import quantities as pq
 
 from evoked.base import RecordingData, col_to_2d
-from evoked.preprocessing import remove_stim_artifact
+from evoked.preprocessing import remove_artifacts
 
 FS = 1000.0
 N_PTS = 30
@@ -35,7 +35,7 @@ def build_recording(artifact="interp", biphasic=True):
         fs=FS * pq.Hz,
     )
     recording = RecordingData.validate(frame)
-    cleaned = remove_stim_artifact(recording, artifact=artifact, biphasic=biphasic)
+    cleaned = remove_artifacts(recording, artifact=artifact, biphasic=biphasic)
     return recording, cleaned
 
 if __name__ == "__main__":

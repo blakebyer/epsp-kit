@@ -1,322 +1,415 @@
 from __future__ import annotations
+
 import os
 from pathlib import Path
-from fractions import Fraction
 import yaml
 import json
 import warnings
+import xlsxwriter
+import openpyxl
+from typing import Any, Optional
 import neo
 import mne
 import mne_bids
 import polars as pl
-import polars_config_meta
 import quantities as pq
 import numpy as np
-from scipy.signal import resample_poly
-from evoked.base import RecordingData, RecordingConfig, RecordingResult
-import json
-from typing import Any
-import xlsxwriter
-import openpyxl
+from evoked.base import RecordingData, Trials, TrialCountMismatch, RecordingResult, AlgorithmResult
+from evoked.config import RecordingConfig
 
 
-def resolve_filenames(data_dir: str) -> list[str]:
-    data_path = Path(data_dir)
+def resolve_filenames(data_path: str) -> list[str]:
+    """Resolve MNE or Neo filenames from a data directory.
+
+    Args:
+        data_path (str): Path to data directory.
+
+    Returns:
+        list[str]: List of absolute filenames.
+    """
+    data_path = Path(data_path)
 
     if (data_path / "dataset_description.json").exists():
         matches = mne_bids.find_matching_paths(
             root=str(data_path),
-            datatypes=["ieeg", "eeg", "meg"],  
+            datatypes=["ieeg", "eeg", "meg"],
             extensions=[".vhdr", ".edf", ".fif"],
         )
         return [str(p.fpath) for p in matches]
 
     return [
-        str(data_path / f)
-        for f in os.listdir(data_path)
-        if (data_path / f).is_file()
+        str(path)
+        for path in data_path.iterdir()
+        if path.is_file()
     ]
 
-def resample_chunk(data: np.ndarray, native_fs: float, target_fs: float) -> tuple[np.ndarray, float]:
-    """(n_channels, n_samples) -> resampled via polyphase filtering, or no-op
-    if already at/below target. Replaces resample_block -- now called per
-    epoch chunk instead of on the whole trace up front."""
-    if target_fs >= native_fs:
-        return data, native_fs
-    ratio = Fraction(target_fs / native_fs).limit_denominator(1000)
-    resampled = resample_poly(data, ratio.numerator, ratio.denominator, axis=-1)
-    new_fs = native_fs * ratio.numerator / ratio.denominator
-    return resampled.astype(np.float32), new_fs
+def downsample_recording(
+    segments: list[neo.Segment],
+    factor: int,
+) -> list[neo.Segment]:
+    """From list of `neo.Segment` use `neo.AnalogSignal.downsample()` to downsample the analogsignals.
 
-def build_channel_dataframe(
-    channel_idx: int,
-    epoched_channel_data: np.ndarray,  # (n_events, n_samples)
-    relative_times: np.ndarray,
-    stimuli: list[str],
-    file_id: str,
-) -> pl.DataFrame:
-    """Build one row per sweep, with array-valued time/value columns."""
-    n_events = len(epoched_channel_data)
+    Args:
+        segments (list[neo.Segment]):
+        factor (int): Decimation factor
 
-    return pl.DataFrame(
-        {
-            "id": pl.Series([file_id] * n_events, dtype=pl.String),
-            "channel": pl.Series([channel_idx] * n_events, dtype=pl.Int32),
-            "sweep_index": pl.Series(np.arange(n_events), dtype=pl.Int32),
-            "stimulus": pl.Series(stimuli, dtype=pl.String),
-            "time": pl.Series(
-                [relative_times.astype(np.float32).tolist()] * n_events,
-                dtype=pl.List(pl.Float32),
-            ),
-            "value": pl.Series(
-                epoched_channel_data.astype(np.float32).tolist(),
-                dtype=pl.List(pl.Float32),
-            ),
-        }
+    Returns:
+        list[neo.Segment]:
+    """
+    if factor <= 1:
+        return segments
+
+    out = []
+
+    for seg in segments:
+        new_seg = neo.Segment(**seg.annotations)
+
+        signal = seg.analogsignals[0].downsample(factor)
+        new_seg.analogsignals.append(signal)
+
+        new_seg.events.extend(seg.events)
+
+        out.append(new_seg)
+
+    return out
+
+
+def load_bids(path: str) -> mne.io.BaseRaw:
+    """Loads `mne.io.BaseRaw` from `path`.
+
+    Args:
+        path (str): 
+
+    Returns:
+        mne.io.BaseRaw: 
+    """
+    bids_path = mne_bids.get_bids_path_from_fname(path, check=True)
+    root = next(
+        parent
+        for parent in Path(path).resolve().parents
+        if (parent / "dataset_description.json").exists()
     )
+    bids_path.update(root=root)
+    return mne_bids.read_raw_bids(bids_path, verbose=False)
 
+def load_neo(path: str, block_index: int = 0) -> list[neo.Segment]:
+    """Loads list of `neo.Segment` from `path`, defaulting to the first block.
 
-def load_single_file(filename: str, block_index: int):
-    """Returns either an mne.io.BaseRaw (BIDS, lazy/preload=False) or a lazy
-    neo.Block (lazy=True). No forced materialization, no neo.Block wrapping
-    for BIDS data."""
-    try:
-        bids_path = mne_bids.get_bids_path_from_fname(filename, check=True)
-        root = next(
-            parent
-            for parent in Path(filename).resolve().parents
-            if (parent / "dataset_description.json").exists()
-        )
-        bids_path.update(root=root)
-    except (ValueError, StopIteration):
-        bids_path = None
+    Args:
+        path (str):
+        block_index (int, optional): Defaults to 0.
 
-    if bids_path is None:
-        reader = neo.io.get_io(filename)
-        return reader.read_block(block_index=block_index)
+    Returns:
+        list[neo.Segment]:
+    """
+    reader = neo.io.get_io(path)
+    block = reader.read_block(block_index=block_index, lazy=True)
+    return block.segments
+
+def crop_mne(
+    raw: mne.io.BaseRaw,
+    epoch: Optional[tuple[float, float]] = None,
+) -> neo.Segment:
+    """Convert an `mne.io.BaseRaw` object to one `neo.Segment`, optionally cropped with `epoch`.
+
+    Args:
+        raw (mne.io.BaseRaw):
+        epoch (Optional[tuple[float, float]], optional): Defaults to None.
+
+    Returns:
+        neo.Segment:
+    """
+
+    if epoch is None:
+        start = 0
+        stop = len(raw.times)
+        t_start = float(raw.first_time)
     else:
-        return mne_bids.read_raw_bids(bids_path, verbose=False)
+        start, stop = raw.time_as_index(epoch)
+        t_start = epoch[0]
 
-
-def process_single_file(
-    filename: str,
-    recordings: dict,
-    epoch: tuple[float, float] | None = None,
-    target_frequency: float | None = None,
-) -> pl.DataFrame:
-    base_name = os.path.basename(filename)
-    file_meta = recordings[base_name]
-
-    result = load_single_file(filename, block_index=file_meta.block_index)
-    is_bids = isinstance(result, mne.io.BaseRaw)
-
-    stimuli = file_meta.expand_stimulus()
-    channel_dfs = []
-
-    if file_meta.layout not in ("continuous", "segments"):
-        raise ValueError(
-            f"'{base_name}': layout must be 'continuous' or 'segments', "
-            f"got {file_meta.layout}"
-        )
-
-    if file_meta.layout == "continuous":
-        if epoch is None:
-            raise ValueError(
-                f"'{base_name}' is continuous but no analysis epoch was specified."
-            )
-
-        if is_bids:
-            if len(result.annotations) == 0:
-                raise ValueError(f"'{base_name}' is continuous but contains no events.")
-            trigger_times = np.asarray(result.annotations.onset)
-            labels = np.asarray(result.annotations.description)
-            sfreq = result.info["sfreq"]
-            t_start = float(result.first_time)
-            ch_names = result.ch_names
-            value_unit = pq.V.dimensionality
-        else:
-            if len(result.segments) != 1:
-                raise ValueError(
-                    f"'{base_name}' is continuous but contains "
-                    f"{len(result.segments)} segments; expected exactly one."
-                )
-            segment = result.segments[0]
-            if not segment.events or len(segment.events[0]) == 0:
-                raise ValueError(f"'{base_name}' is continuous but contains no events.")
-            events = segment.events[0]
-            trigger_times = np.asarray(events.times.rescale(pq.s))
-            labels = np.asarray(events.labels)
-            signal = segment.analogsignals[0]
-            sfreq = float(signal.sampling_rate.rescale(pq.Hz))
-            t_start = float(signal.t_start.rescale(pq.s))
-            ch_names = signal.array_annotations.get("channel_name", np.array([])).tolist()
-            value_unit = signal.units.dimensionality
-
-        if file_meta.event_label is not None:
-            trigger_times = trigger_times[labels == file_meta.event_label]
-
-        if len(stimuli) != len(trigger_times):
-            raise ValueError(
-                f"'{base_name}' has {len(trigger_times)} selected events "
-                f"but {len(stimuli)} expanded stimulus values."
-            )
-
-        start_offset, end_offset = epoch
-        fs = sfreq
-        n_samples = int(round((end_offset - start_offset) * sfreq))
-        epochs = []
-        for t in trigger_times:
-            if is_bids:
-                start = int(round((t + start_offset - t_start) * sfreq))
-                stop = start + n_samples
-                chunk = result.get_data(start=start, stop=stop)
-            else:
-                proxy = segment.analogsignals[0]
-                chunk = np.asarray(
-                    proxy.load(time_slice=((t + start_offset) * pq.s, (t + end_offset) * pq.s))
-                ).T
-                chunk = chunk[:, :n_samples] # trim to avoid rounding overshoot
-            if target_frequency is not None:
-                chunk, fs = resample_chunk(chunk, sfreq, target_frequency)
-            epochs.append(chunk.astype(np.float32))
-
-        epoched_matrix = np.stack(epochs, axis=1)  # (n_channels, n_events, n_samples)
-        relative_times = np.linspace(
-            start_offset, end_offset, epoched_matrix.shape[2], endpoint=False
-        )
-
-        for ch_idx in range(epoched_matrix.shape[0]):
-            channel_dfs.append(
-                build_channel_dataframe(
-                    channel_idx=ch_idx,
-                    epoched_channel_data=epoched_matrix[ch_idx],
-                    relative_times=relative_times,
-                    stimuli=stimuli,
-                    file_id=file_meta.id,
-                )
-            )
-
-    else:  # "segments"
-        if is_bids:
-            raise ValueError(f"'{base_name}': 'segments' layout requires Neo; BIDS files are continuous.")
-
-        if len(result.segments) != len(stimuli):
-            raise ValueError(
-                f"{base_name}: expected {len(stimuli)} segments "
-                f"from metadata, but file contains {len(result.segments)} segments. Skipping..."
-            )
-
-        n_channels = len(result.segments[0].analogsignals)
-        signal = result.segments[0].analogsignals[0]
-        fs = float(signal.sampling_rate.rescale(pq.Hz))
-        ch_names = signal.array_annotations.get("channel_name", np.array([])).tolist()
-        value_unit = signal.units.dimensionality
-
-        for ch_idx in range(n_channels):
-            sweep_signals = [seg.analogsignals[ch_idx] for seg in result.segments]
-            epoched_channel_data = np.vstack(
-                [np.asarray(s, dtype=np.float32).squeeze() for s in sweep_signals]
-            )
-            ref_sig = sweep_signals[0]
-            relative_times = np.asarray(ref_sig.times.rescale(pq.s), dtype=np.float32).squeeze()
-
-            channel_dfs.append(
-                build_channel_dataframe(
-                    channel_idx=ch_idx,
-                    epoched_channel_data=epoched_channel_data,
-                    relative_times=relative_times,
-                    stimuli=stimuli,
-                    file_id=file_meta.id,
-                )
-            )
-
-    combined = pl.concat(channel_dfs, how="vertical")
-    combined.config_meta.set(
-        stimulus_unit=file_meta.stimulus_unit.dimensionality if isinstance(file_meta.stimulus_unit, pq.Quantity) else "",
-        time_unit=pq.s.dimensionality,
-        value_unit=value_unit,
-        fs=fs * pq.Hz,
-        channel_names=ch_names,
+    chunk = raw.get_data(
+        start=start,
+        stop=stop,
     )
 
-    print(f"Processed {base_name} as {file_meta.layout}: {len(stimuli)} trials.")
-    return combined
+    signal = neo.AnalogSignal(
+        chunk.T,
+        units=pq.V,
+        sampling_rate=raw.info["sfreq"] * pq.Hz,
+        t_start=t_start * pq.s,
+        array_annotations={
+            "channel_name": np.array(raw.ch_names),
+        },
+    )
+
+    segment = neo.Segment()
+    segment.analogsignals.append(signal)
+
+    times = np.asarray(raw.annotations.onset)
+    labels = np.asarray(raw.annotations.description)
+
+    if epoch is not None:
+        mask = (
+            (times >= epoch[0])
+            & (times < epoch[1])
+        )
+        times = times[mask]
+        labels = labels[mask]
+
+    if len(times):
+        segment.events.append(
+            neo.Event(
+                times=times * pq.s,
+                labels=labels,
+            )
+        )
+
+    return segment
+
+def crop_neo(
+    segment: neo.Segment,
+    epoch: Optional[tuple[float, float]] = None,
+) -> neo.Segment:
+    """Convert a `neo.Segment` object to one `neo.Segment`, optionally cropped with `epoch`.
+
+    Args:
+        segment (neo.Segment): 
+        epoch (Optional[tuple[float, float]], optional): Defaults to None.
+
+    Returns:
+        neo.Segment:
+    """
+
+    proxy = segment.analogsignals[0]
+
+    if epoch is None:
+        signal = proxy.load()
+    else:
+        signal = proxy.load(
+            time_slice=(
+                epoch[0] * pq.s,
+                epoch[1] * pq.s,
+            )
+        )
+
+    new_segment = neo.Segment(**segment.annotations)
+    new_segment.analogsignals.append(signal)
+
+    for events in segment.events:
+        if epoch is None:
+            new_segment.events.append(events)
+            continue
+
+        times = np.asarray(
+            events.times.rescale(pq.s).magnitude
+        )
+
+        mask = (
+            (times >= epoch[0])
+            & (times < epoch[1])
+        )
+
+        if np.any(mask):
+            new_segment.events.append(
+                neo.Event(
+                    times=events.times[mask],
+                    labels=events.labels[mask],
+                )
+            )
+
+    return new_segment
+
+def epoch_recording(
+    data: mne.io.BaseRaw | list[neo.Segment],
+    epoch: Optional[tuple[float, float]],
+    event_label: Optional[str] = None,
+) -> list[neo.Segment]:
+    """Epochs an `mne.io.BaseRaw` or list of `neo.Segment` and returns a list of `neo.Segment`.
+    If `epoch` is None, returns entire file in one segment.
+    If `epoch` is set and `event_label` is None, epochs one segment.
+    If `epoch` and `event_label` are set, epochs around `neo.Event.times` and stacks segments into list of length `len(neo.Event.labels)`.
+
+    Args:
+        data (mne.io.BaseRaw | list[neo.Segment]): 
+        epoch (Optional[tuple[float, float]]): 
+        event_label (Optional[str], optional): Defaults to None.
+
+    Raises:
+        ValueError: An `epoch` window is required when `event_label` is specified.
+
+    Returns:
+        list[neo.Segment]:
+    """
+
+    if event_label is None:
+        if isinstance(data, mne.io.BaseRaw):
+            return [crop_mne(data, epoch)]
+
+        return [
+            crop_neo(seg, epoch)
+            for seg in data
+        ]
+
+    if epoch is None:
+        raise ValueError(
+            "An epoch window is required when event_label is specified."
+        )
+
+    if isinstance(data, mne.io.BaseRaw):
+        return epoch_mne(data, epoch, event_label)
+
+    return [
+        trial
+        for seg in data
+        for trial in epoch_neo(seg, epoch, event_label)
+    ]
+
+
+def epoch_mne(raw: mne.io.BaseRaw, 
+              epoch: tuple[float, float], 
+              event_label: str) -> list[neo.Segment]:
+    """From an `mne.io.BaseRaw` object, epochs around events marked with `event_label` to a list of `neo.Segment`.
+
+    Args:
+        raw (mne.io.BaseRaw): 
+        epoch (tuple[float, float]): 
+        event_label (str): 
+
+    Returns:
+        list[neo.Segment]: 
+    """
+    times = np.asarray(raw.annotations.onset)
+    labels = np.asarray(raw.annotations.description)
+    if event_label is not None:
+        mask = labels == event_label
+        times = times[mask]
+        labels = labels[mask]
+
+    sfreq, t_start = raw.info["sfreq"], float(raw.first_time)
+    n_samples = int(round((epoch[1] - epoch[0]) * sfreq))
+
+    trials = []
+    for t, label in zip(times, labels):
+        start = int(round((t + epoch[0] - t_start) * sfreq))
+        chunk = raw.get_data(start=start, stop=start + n_samples)  # (n_channels, n_samples)
+        if chunk.shape[1] != n_samples:
+            warnings.warn(f"Trial at t={t:.3f}s truncated by recording end, dropping.")
+            continue
+        signal = neo.AnalogSignal(chunk.T, units=pq.V, sampling_rate=sfreq * pq.Hz,
+                                   t_start=epoch[0] * pq.s,
+                                   array_annotations={"channel_name": np.array(raw.ch_names)})
+        onset = neo.Event(times=np.array([0.0]) * pq.s, labels=np.array([label]))
+        trial = neo.Segment()
+        trial.analogsignals.append(signal)
+        trial.events.append(onset)
+        trials.append(trial)
+    return trials
+
+
+def epoch_neo(
+    segment: neo.Segment,
+    epoch: tuple[float, float],
+    event_label: Optional[str] = None,
+) -> list[neo.Segment]:
+    """From a single `neo.Segment`, epochs around events marked with `event_label` to a list of `neo.Segment`.
+
+    Args:
+        segment (neo.Segment): 
+        epoch (tuple[float, float]): 
+        event_label (Optional[str], optional): Defaults to None.
+
+    Returns:
+        list[neo.Segment]:
+    """
+
+    events = segment.events[0]
+    times = np.asarray(events.times.rescale(pq.s).magnitude)
+    labels = np.asarray(events.labels)
+
+    if event_label is not None:
+        mask = labels == event_label
+        times, labels = times[mask], labels[mask]
+
+    proxy = segment.analogsignals[0]
+
+    trials = []
+    for t, label in zip(times, labels):
+        signal = proxy.load(
+            time_slice=(
+                (t + epoch[0]) * pq.s,
+                (t + epoch[1]) * pq.s,
+            )
+        )
+        signal.t_start = epoch[0] * pq.s
+        onset = neo.Event(times=np.array([0.0]) * pq.s, labels=np.array([label]))
+        trial = neo.Segment()
+        trial.analogsignals.append(signal)
+        trial.events.append(onset)
+        trials.append(trial)
+
+    return trials
+
+def load_segments(
+    filename: str,
+    epoch: Optional[tuple[float, float]] = None,
+    event_label: Optional[str] = None,
+) -> list[neo.Segment]:
+    """
+    Loads a MNE or Neo file into list of `neo.Segment`.
+    If `epoch` is None, returns entire file in one segment.
+    If `epoch` is set and `event_label` is None, epochs one segment.
+    If `epoch` and `event_label` are set, epochs around `neo.Event.times` and stacks segments into list of length `len(neo.Event.labels)`.
+
+    Args:
+        filename (str):
+        epoch (Optional[tuple[float, float]], optional): Defaults to None.
+        event_label (Optional[str], optional): Event label in BIDS *_events.tsv. Defaults to None.
+
+    Returns:
+        list[neo.Segment]:
+    """
+
+    try:
+        data = load_bids(filename)
+        layout = "continuous"
+    except (ValueError, StopIteration):
+        data = load_neo(filename)
+        layout = "segments" if len(data) > 1 else "continuous"
+
+    segments = epoch_recording(
+        data,
+        epoch,
+        event_label,
+    )
+
+    for i, segment in enumerate(segments):
+        segment.annotate(
+            file_origin=os.path.basename(filename),
+            origin_index=i,
+        )
+
+    print(
+        f"Processed {os.path.basename(filename)} "
+        f"as {layout}: {len(segments)} trials."
+    )
+
+    return segments
+        
 
 def load_config(
         yaml_path: str
-    ):
-    """
-    Users should provide a config YAML file for their experiment.
+    ) -> RecordingConfig:
+    """Loads YAML configuration file
 
+    Args:
+        yaml_path (str): path to YAML file
 
-    `recordings` can be given in either of two forms:
+    Raises:
+        FileNotFoundError: raises if YAML is not found
 
-    1) Dict form -- a mapping of filename to per-recording overrides.
-    Any field omitted here falls back to the corresponding value in
-    `default`, and `id` falls back to the filename's basename stem if
-    omitted.
-
-        experiment:
-            name: experiment 1
-            description: this is an experiment
-
-        metadata:
-            default:
-                stimulus_unit: uA
-                order: grouped
-                repeats: 3
-
-            recordings:
-                2025_03_02_0000.abf:
-                    id: drug_group_1
-                    stimulus: [25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600]
-                2025_03_02_0002.abf:
-                    id: control_group_1
-                    stimulus: [0.1, 1, 5, 10]
-                    order: interleaved
-                    repeats: 4
-                    stimulus_unit: V
-                2025_03_05_0007.abf:
-                    id: slice_01
-                    stimulus: [puff1, puff3, puff18, puff8, puff7, puff2]
-                    order: explicit
-                    repeats: 1
-                paired_pulse_01.abf:
-                    id: slice_02
-                    stimulus: [pp1, pp2, pp3, pp4]
-                    order: explicit
-                    repeats: 2
-
-        analysis:
-            epoch:
-                [-0.002,0.025]
-
-            features:
-                Fiber volley:
-                    window: [0.0020,0.0035]
-                fEPSP:
-                    window: [0.0035, 0.005]
-                    slope_transform: True
-                Population spike:
-                    window: [0.005, 0.007]
-        
-
-
-    2) List form -- a bare list of filenames, useful when every
-    recording shares the same stimulus/order/repeats/stimulus_unit
-    from `default`. `id` is derived from each filename's basename
-    stem.
-
-        default:
-            stimulus: [25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600]
-            repeats: 3
-            stimulus_unit: uA
-            order: grouped
-
-        recordings:
-            - 2025_03_04_0002.abf
-            - 2025_03_03_0000.abf
-            - 2025_03_05_0004.abf
+    Returns:
+        RecordingConfig: configuration schema
     """
     if not os.path.exists(yaml_path):
         raise FileNotFoundError(f"Recording metadata not found at {yaml_path}")
@@ -326,100 +419,216 @@ def load_config(
     
     return RecordingConfig.model_validate(metadata)
 
-def load_bulk(
+def load(
     filenames: list[str],
-    config_path: str,
-) -> pl.DataFrame:
-    config = load_config(config_path)
-    recordings = config.metadata.recordings
-    epoch = config.analysis.epoch
-    target_frequency = config.analysis.target_frequency
+    epoch: Optional[tuple[float, float]] = None,
+    event_label: Optional[str] = None,
+) -> list[neo.Segment]:
+    """
+    Loads MNE or Neo files into a list of `neo.Segment`.
+    If `epoch` is None, returns one full-length segment per file.
+    If `epoch` is set and `event_label` is None, epochs one segment per file.
+    If `epoch` and `event_label` are set, epochs around `neo.Event.times` and stacks segments into list of length `len(neo.Event.labels)` per file.
 
-    filenames = [
-        fname for fname in filenames
-        if os.path.basename(fname) in recordings
+    Args:
+        filenames (list[str]): 
+        epoch (Optional[tuple[float, float]], optional): Analysis epoch. Defaults to None.
+        event_label (Optional[str], optional): BIDS or Neo event label. Defaults to None.
+
+    Returns:
+        list[neo.Segment]:
+    """
+
+    return [
+        segment
+        for filename in filenames
+        for segment in load_segments(
+            filename,
+            epoch,
+            event_label,
+        )
     ]
-    if not filenames:
-        raise ValueError(
-            "None of the provided files have metadata under the 'recordings' "
-            "section in your YAML."
+
+def add_trials(
+    segments: list[neo.Segment],
+    trials: str | pl.DataFrame,
+) -> RecordingData:
+    """Adds trials to `RecordingData` from path to trials table or from `pl.DataFrame`.
+
+    Args:
+        segments (list[neo.Segment]):
+        trials (str | pl.DataFrame):
+
+    Raises:
+        TrialCountMismatch: Number of trials in `trials` must be the same length as `len(list[neo.Segment])`.
+
+    Returns:
+        RecordingData:
+    """
+
+    if isinstance(trials, str):
+        trials = pl.read_csv(trials, separator="\t")
+
+    if "trial_index" not in trials.columns:
+        trials = trials.with_row_index("trial_index")
+
+    if len(trials) != len(segments):
+        raise TrialCountMismatch(
+            f"{len(segments)} segments but "
+            f"{len(trials)} trial rows."
         )
 
-    dataframes = []
-    for filename in filenames:
-        try:
-            dataframes.append(
-                process_single_file(filename, recordings, epoch, target_frequency)
-            )
-        except ValueError as e:
-            if "expected" in str(e):
-                warnings.warn(f"{e} This file will be omitted from quantification.")
-                continue
-            raise
+    return RecordingData(
+        segments=segments,
+        trials=Trials.validate(trials),
+    )
 
-    if not dataframes:
-        raise ValueError(f"Loading for {filenames} failed. Data is empty.")
+def save_results_json(results: RecordingResult, filepath: str) -> None:
+    """Saves `results` to machine-readable JSON.
 
-    combined = pl.concat(dataframes, how="vertical")
-    combined.config_meta.merge(*dataframes)
-    return RecordingData.validate(combined)
+    Args:
+        results (RecordingResult): 
+        filepath (str): 
+    """
+    data = {
+        name: ar.model_dump(mode="json")
+        for name, ar in results.items()
+    }
 
-def save_results_json(recording_result: RecordingResult, filepath: str):
-    """Export recording result to JSON"""
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(recording_result.model_dump_json(indent=4))
+        json.dump(data, f, indent=2)
 
-def load_results_json(json_path: str):
-    with open(json_path, "r", encoding="utf-8") as f:
-        raw = f.read()
-    return RecordingResult.model_validate_json(raw) 
 
-def save_results_xlsx(recording_result: RecordingResult, filepath: str) -> None:
-    """Export a RecordingResult to .xlsx: one sheet per feature result,
-    a parameter block (every scalar field) followed by its dataframe field(s).
-    Driven by type, not field names, so it keeps working as fields change."""
+def load_results_json(filepath: str) -> RecordingResult:
+    """Loads a `RecordingResult` from JSON.
+
+    Args:
+        filepath (str): 
+
+    Returns:
+        RecordingResult: 
+    """
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    return {
+        name: AlgorithmResult.model_validate(value)
+        for name, value in data.items()
+    }
+
+
+def save_results_xlsx(
+    results: RecordingResult,
+    filepath: str,
+) -> None:
+    """Exports `results` as one sheet per feature plus hidden serialized data in a '_data' sheet.
+
+    Args:
+        results (RecordingResult): 
+        filepath (str):
+    """
 
     def scalarize(value: Any) -> Any:
         if isinstance(value, np.ndarray):
             return json.dumps(value.tolist())
-        elif isinstance(value, (tuple, list, dict)):
+        if isinstance(value, (tuple, list, dict)):
             return json.dumps(value, default=str)
-        elif value is None:
+        if value is None:
             return ""
-        elif isinstance(value, (str, int, float, bool)):
+        if isinstance(value, (str, int, float, bool)):
             return value
-        else:
-            return str(value)
+        return str(value)
 
     workbook = xlsxwriter.Workbook(filepath)
 
-    for name, fr in recording_result.results.items():
-        worksheet = workbook.add_worksheet(name[:31])  # Excel sheet-name limit
+    for name, ar in results.items():
+        worksheet = workbook.add_worksheet(name[:31])
 
-        df_fields = {k: v for k, v in fr.__dict__.items() if isinstance(v, pl.DataFrame)}
-        param_fields = {k: v for k, v in fr.__dict__.items() if k not in df_fields}
+        serialized = ar.model_dump(mode="json")
+        params = serialized["algorithm"]
 
         worksheet.write_row(0, 0, ["parameter", "value"])
-        for row, (key, value) in enumerate(param_fields.items(), start=1):
+
+        for row, (key, value) in enumerate(params.items(), start=1):
             worksheet.write(row, 0, key)
             worksheet.write(row, 1, scalarize(value))
 
-        row = len(param_fields) + 2  # blank row, then next table
-        for df_name, df in df_fields.items():
-            nested = [c for c, dt in zip(df.columns, df.dtypes) if dt.base_type() in (pl.List, pl.Struct, pl.Array, pl.Object)]
-            if nested:
-                df = df.with_columns(pl.col(c).map_elements(lambda x: json.dumps(x, default=lambda o: o.tolist() if isinstance(o, np.ndarray) else str(o)) if x is not None else "", return_dtype=pl.String) for c in nested)
-            df.write_excel(workbook=workbook, worksheet=worksheet, position=f"A{row + 2}")
-            row += df.height + 3
+        df = ar.result
+
+        nested = [
+            column
+            for column, dtype in zip(df.columns, df.dtypes)
+            if dtype.base_type() in (
+                pl.List,
+                pl.Struct,
+                pl.Array,
+                pl.Object,
+            )
+        ]
+
+        if nested:
+            df = df.with_columns(
+                pl.col(column).map_elements(
+                    lambda x: (
+                        json.dumps(
+                            x,
+                            default=lambda o: (
+                                o.tolist()
+                                if isinstance(o, np.ndarray)
+                                else str(o)
+                            ),
+                        )
+                        if x is not None
+                        else ""
+                    ),
+                    return_dtype=pl.String,
+                )
+                for column in nested
+            )
+
+        df.write_excel(
+            workbook=workbook,
+            worksheet=worksheet,
+            position=f"A{len(params) + 4}",
+        )
 
     hidden = workbook.add_worksheet("_data")
-    hidden.write(0, 0, recording_result.model_dump_json())
+
+    data = {
+        name: ar.model_dump(mode="json")
+        for name, ar in results.items()
+    }
+
+    hidden.write(
+        0,
+        0,
+        json.dumps(data),
+    )
     hidden.hide()
 
     workbook.close()
 
-def load_results_xlsx(xlsx_path: str) -> RecordingResult:
-    """Reload a RecordingResult saved by save_results_xlsx, via its hidden JSON sheet."""
-    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+
+def load_results_xlsx(
+    xlsx_path: str,
+) -> RecordingResult:
+    """Reload results as `RecordingResult` from the hidden serialized JSON sheet.
+
+    Args:
+        xlsx_path (str):
+
+    Returns:
+        RecordingResult:
+    """
+    wb = openpyxl.load_workbook(
+        xlsx_path,
+        data_only=True,
+    )
+
     raw = wb["_data"]["A1"].value
-    return RecordingResult.model_validate_json(raw)
+    data = json.loads(raw)
+
+    return {
+        name: AlgorithmResult.model_validate(value)
+        for name, value in data.items()
+    }

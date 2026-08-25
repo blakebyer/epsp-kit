@@ -1,45 +1,98 @@
 from __future__ import annotations
+
 import os
-from evoked.base import RecordingResult
-from evoked.io import resolve_filenames, load_bulk, save_results_xlsx
+
+from evoked.io import resolve_filenames, load_bulk, save_results_xlsx, save_results_json
 from evoked.preprocessing import preprocess
-from evoked.matched_filter import match_feature
+from evoked.algorithms.spectral import RMS
+from evoked.algorithms.nonlinear import DTW
+from evoked.visualization import TracePlot, IOPlot
 
-data_path = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 
-met_path = os.path.join(os.path.dirname(__file__), "fepsp.yml")
+data_path = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "..",
+    "datasets",
+)
+
+met_path = os.path.join(
+    os.path.dirname(__file__),
+    "fepsp.yml",
+)
 
 test_files = resolve_filenames(data_path)
 
-## Equivalent to: 
-# recordings = ["2025_03_02_0000.abf", "2025_03_02_0003.abf", "2025_03_02_0010.abf"]
-# test_files = [os.path.join(data_path, f) for f in recordings]
+recording = load_bulk(test_files, met_path)
 
-test = load_bulk(test_files, met_path)
+recording = preprocess(
+    recording,
+    params={"smoothing": "none"},
+)
 
-pre = preprocess(test)
+results = {}
 
-results = RecordingResult()
-
-results.add("Fiber Volley", match_feature(
-    pre,
+results["Fiber Volley"] = DTW(
     window=(0.00125, 0.003),
-    noise_window=(0.02324, 0.02499),
-))
+    noise_window=(0.02324, 0.02499)
+).match(recording)
 
-results.add("fEPSP", match_feature(
-    pre,    
+results["fEPSP"] = DTW(
     window=(0.0025, 0.004),
     noise_window=(0.02324, 0.02499),
     slope_transform=True,
-))
+    snr_threshold=10.0,
+).match(recording)
 
-results.add("Population Spike", match_feature(
-    pre,
+results["Population Spike"] = DTW(
     window=(0.005, 0.0075),
     noise_window=(0.02324, 0.02499),
-))
+    snr_threshold=10.0,
+).match(recording)
 
-output_path = os.path.join(os.path.dirname(__file__), f"fEPSP experiment.xlsx")
-save_results_xlsx(results, output_path)
-print(f"Saved results to {output_path}")
+trace = TracePlot(
+    id="2025_03_02_0000",
+    channel=0,
+    stimuli=["50", "75", "150", "300", "400", "600"],
+    features=[
+        "Fiber Volley",
+        "fEPSP",
+        "Population Spike",
+    ],
+    annotated=True,
+)
+
+print(results)
+
+# io = IOPlot(
+#     channel=0,
+#     features=["Fiber Volley",
+#             "fEPSP",
+#             "Population Spike",],
+#     stimuli=["50", "75", "150", "300", "400", "600"]
+# )
+
+trace.plot(
+    recording=recording,
+    results=results,
+)
+
+# io.plot(
+#     recording=recording,
+#     results=results
+# )
+
+trace.figure.savefig(
+    "trace_plot.png",
+    dpi=600,
+    bbox_inches="tight",
+)
+
+# io.figure.savefig(
+#     "io_plot.png",
+#     dpi=600,
+#     bbox_inches="tight"
+# )
+
+save_results_json(results, "results.json")
+save_results_xlsx(results, "results.xlsx")

@@ -7,11 +7,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel
 
-from evoked.base import RecordingResult, RecordingConfig, TracePlot, MultiChannelPlot, IOPlot, FitPlot, DetectedPlot, AllFilesPlot
+from evoked.base import RecordingResult
+from evoked.config import RecordingConfig
 from evoked.io import resolve_filenames, load_bulk, load_config, save_results_xlsx
 from evoked.preprocessing import preprocess
-from evoked.matched_filter import match_feature
-from evoked.plotting import plot_trace, plot_multichannel, plot_io_curve, plot_fit, plot_detected, plot_all_files
+from evoked.algorithms.linear import MatchedFilter
+from evoked.algorithms.probabilistic import GLRT
+from evoked.visualization import TracePlot, MultiChannelPlot, IOPlot, FitPlot, DetectedPlot, AllFilesPlot
 
 
 def clean_config(model: BaseModel) -> dict:

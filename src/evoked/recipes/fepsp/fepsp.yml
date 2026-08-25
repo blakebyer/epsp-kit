@@ -5,6 +5,7 @@ experiment:
 metadata:
   default:
     stimulus: [25, 50, 75, 100, 150, 200, 250, 300, 400, 500, 600]
+    stimulus_unit: uA
     layout: segments
     order: grouped
     repeats: 3

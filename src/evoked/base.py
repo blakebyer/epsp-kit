@@ -1,345 +1,273 @@
 from __future__ import annotations
 
-import os
-from typing import Any, Literal, Optional, Annotated
-from pydantic import BaseModel, ConfigDict, WithJsonSchema, Field, model_validator, field_validator, field_serializer
+import neo
+import numpy as np
+from typing import Any, Optional, Union, Callable
+from pydantic import BaseModel, ConfigDict, field_validator, field_serializer
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
 import polars as pl
 import pandera.polars as pa
 import quantities as pq
-import numpy as np
-from pandera.typing.polars import Series, DataFrame
+from pandera.typing.polars import Series
 
-def col_to_2d(df: pl.DataFrame, col: str) -> np.ndarray:
-    """List(Float32) column -> real 2D float32 array, no per-row boxing."""
-    lengths = df.get_column(col).list.len()
-    if lengths.n_unique() != 1:
-        raise ValueError(f"'{col}' has ragged lengths; batch isn't vectorizable.")
-    return df.get_column(col).explode().to_numpy().reshape(df.height, int(lengths[0]))
 
-def col_from_2d(arr: np.ndarray, name: str) -> pl.Series:
-    """2D float32 array -> List(Float32) column, no .tolist()."""
-    return pl.Series(name, arr, dtype=pl.List(pl.Float32))
+ChannelTypes = Union[int, str]
+StimulusTypes = Union[str, int, float]
+Selector = Union[list, str, tuple]
 
-class RecordingData(pa.DataFrameModel):
-    id: Series[str]
-    channel: Series[pl.Int32]
-    sweep_index: Series[pl.Int32]
-    time: Series[Annotated[pl.List, pl.Float32()]]
-    value: Series[Annotated[pl.List, pl.Float32()]]
-    stimulus: Series[str]
+class Trials(pa.DataFrameModel):
+    trial_index: Series[int]
+    file_origin: Series[str]
+    stimulus: Series[StimulusTypes] = pa.Field(nullable=True, coerce=True)
 
-OrderType = Literal["grouped", "interleaved", "explicit"]
-LayoutType = Literal["segments", "continuous"]
+    class Config: 
+        strict = False # as many groups as the user wants
+        dtype = "object"
 
-class Experiment(BaseModel):
-    name: str
-    description: Optional[str] = None
+    @pa.dataframe_check
+    def trial_index_is_unique(cls, df: pl.DataFrame) -> bool:
+        return df["trial_index"].n_unique() == df.height
 
-QuantityConfig = Annotated[
-    pq.Quantity,
-    WithJsonSchema({"type": "string"}),
-]
+class TrialCountMismatch(ValueError):
+    """Raised when a file's segment count doesn't match its expanded stimulus list."""
 
-class Recording(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-    block_index: Optional[int] = None
-    id: Optional[str] = None
-    stimulus: list[str] = Field(default_factory=list)
-    order: Optional[OrderType] = None
-    repeats: Optional[int] = None
-    event_label: str | None = None
-    stimulus_unit: Optional[QuantityConfig] = None
-    layout: Optional[LayoutType] = None
+@dataclass
+class RecordingData:
+    segments: list[neo.Segment]
+    trials: Trials
 
-    def expand_stimulus(self) -> list[str]:
-        if self.order == "explicit":
-            return list(self.stimulus)
-        elif self.order == "grouped":
-            return [s for s in self.stimulus for _ in range(self.repeats)]
-        elif self.order == "interleaved":
-            return list(self.stimulus) * self.repeats
-        else:
-            raise ValueError(f"Unknown order: {self.order}. Must be one of: explicit, grouped, or interleaved")
-        
-    @field_validator("stimulus_unit", mode="before")
-    @classmethod
-    def parse_unit(cls, v):
-        if isinstance(v, str):
-            return getattr(pq, v, pq.dimensionless)   # "uA" -> pq.uA, "kazoo" -> pq.dimensionless
-        return v
-    @field_validator("stimulus", mode="before")
-    @classmethod
-    def coerce_stimulus(cls, s):
-        if any(isinstance(i, (int, float)) for i in s):
-            return list(map(str, s))
-        return s
-    
-class Metadata(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-    default: Optional[dict[str, Any]] = None
-    recordings: dict[str, Recording]
-    
-    @model_validator(mode="before")
-    @classmethod
-    def normalize_recordings(cls, data: Any) -> Any:
-        """
-        Allow `recordings` to be provided either as:
- 
-          - dict form: a mapping of filename -> per-recording overrides
-                recordings:
-                    file1.abf:
-                        id: slice_1
- 
-          - list form: a bare list of filenames that should rely
-            entirely on the `default` block, with `id` derived from
-            each filename's basename stem
-                recordings:
-                    - file1.abf
-                    - file2.abf
- 
-        List form is normalized into dict form here (each filename
-        mapped to an empty override dict) so that the rest of the
-        model -- including `apply_defaults` below, which fills in `id`
-        and pulls remaining fields from `default` -- never has to know
-        which form the user provided.
-        """
-        if isinstance(data, dict):
-            recordings = data.get("recordings")
-            if isinstance(recordings, list):
-                data["recordings"] = {
-                    filename: {} for filename in recordings
-                }
-        return data
- 
-    @model_validator(mode="after")
-    def apply_defaults(self) -> Metadata:
-        for filename, recording in self.recordings.items():
- 
-            if recording.id is None:
-                recording.id = os.path.splitext(os.path.basename(filename))[0]
- 
-            for key, default_value in (self.default or {}).items():
-                if hasattr(recording, key):
-                    field_was_missing = key not in recording.model_fields_set
-                    field_is_none = getattr(recording, key) is None
- 
-                    if field_was_missing or field_is_none:
-                        setattr(recording, key, default_value)
-            if recording.block_index is None:
-                recording.block_index = 0
+    def values(
+        self,
+        window: Optional[tuple[float, float]] = None,
+    ) -> np.ndarray:
 
-            if recording.layout == "segments":
-                if not recording.stimulus:
-                    raise ValueError(
-                        f"File '{filename}' has no stimulus values."
-                    )
+        signals = [seg.analogsignals[0] for seg in self.segments]
 
-                if recording.order is None:
-                    raise ValueError(
-                        f"File '{filename}' is missing required field 'order'."
-                    )
+        if window is not None:
+            t0, t1 = window
+            signals = [
+                sig.time_slice(t0 * pq.s, t1 * pq.s)
+                for sig in signals
+            ]
 
-                if recording.order != "explicit" and recording.repeats is None:
-                    raise ValueError(
-                        f"File '{filename}' is missing required field 'repeats'."
-                    )
+        return np.stack([sig.magnitude for sig in signals])
 
-            # if recording.stimulus_unit is None:
-            #             raise ValueError(
-            #                 f"File '{filename}' is missing required field 'stimulus_unit'. "
-            #                 "Specify it under the file entry or in the global 'default' block."
-            #             )
- 
-        return self
-    
-class Feature(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-    window: Optional[tuple[float, float]] = None
-    noise_window: Optional[tuple[float, float]] = None
-    search_window: Optional[tuple[float, float] | float] = None
-    slope_transform: Optional[bool] = None
-    snr_threshold: Optional[float] = None
-    r2_threshold: Optional[float] = None
-    
-class Analysis(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-    default: Optional[dict[str, Any]] = None
-    epoch: Optional[tuple[float, float]] = None
-    target_frequency: Optional[float] = None
-    preprocess: Optional[dict] = None
-    features: dict[str, Feature] = Field(default_factory=dict)
+    def times(
+        self,
+        window: Optional[tuple[float, float]] = None,
+    ) -> pq.Quantity:
+        signal = self.segments[0].analogsignals[0]
 
-    @model_validator(mode="after")
-    def apply_defaults(self) -> Analysis:
-        for feature, settings in self.features.items():
+        if window is not None:
+            signal = signal.time_slice(
+                window[0] * pq.s,
+                window[1] * pq.s,
+            )
 
-            for key, default_value in (self.default or {}).items():
-                if hasattr(settings, key):
-                    field_was_missing = key not in settings.model_fields_set
-                    field_is_none = getattr(settings, key) is None
- 
-                    if field_was_missing or field_is_none:
-                        setattr(settings, key, default_value)
-            if settings.window is None:
-                raise ValueError(
-                    f"Feature '{feature}' is missing required field 'window'. "
-                    "Specify it under the feature entry or in the global 'default' block."
+        return signal.times
+
+    @staticmethod
+    def _clone_segment(source: neo.Segment, signal) -> neo.Segment:
+        new_seg = neo.Segment(**source.annotations)
+        new_seg.analogsignals.append(signal)
+        new_seg.events.extend(source.events)
+        return new_seg
+
+    def map_values(self, fn: Callable[[np.ndarray], np.ndarray]) -> RecordingData:
+        values = fn(self.values())
+        segments = [
+            self._clone_segment(seg, seg.analogsignals[0].duplicate_with_new_data(values[i]))
+            for i, seg in enumerate(self.segments)
+        ]
+        return RecordingData(segments=segments, trials=self.trials)
+
+    def average_by(self, by: str | list[str]) -> RecordingData:
+        by = [by] if isinstance(by, str) else by
+        values = self.values()
+
+        trials = self.trials.with_row_index("__row")
+
+        segments = []
+        rows = []
+
+        for key, group in trials.group_by(by, maintain_order=True):
+            positions = group["__row"].to_numpy()
+            mean = values[positions].mean(axis=0)
+
+            first = self.segments[positions[0]]
+            signal = first.analogsignals[0].duplicate_with_new_data(mean)
+            segments.append(self._clone_segment(first, signal))
+
+            key = key if isinstance(key, tuple) else (key,)
+            rows.append({
+                "trial_index": len(rows),
+                **dict(zip(by, key)),
+            })
+
+        return RecordingData(
+            segments=segments,
+            trials=Trials.validate(pl.DataFrame(rows)),
+        )
+
+    def select_trials(
+        self,
+        predicate: Optional[pl.Expr] = None,
+        **filters,
+    ) -> RecordingData:
+        selected = self.trials.with_row_index("__row")
+
+        if predicate is not None:
+            selected = selected.filter(predicate)
+
+        for column, value in filters.items():
+            if column not in self.trials.columns:
+                raise KeyError(f"Unknown trial field: {column}")
+
+            if isinstance(value, (list, tuple, set)):
+                selected = selected.filter(
+                    pl.col(column).is_in(value)
                 )
-            if settings.noise_window is None:
-                raise ValueError(
-                    f"Feature '{feature}' is missing required field 'noise_window'. "
-                    "Specify it under the feature entry or in the global 'default' block."
+            else:
+                selected = selected.filter(
+                    pl.col(column) == value
                 )
-        return self
 
-class TruthData(pa.DataFrameModel):
-    id: Series[str]
-    channel: Series[int]
-    stimulus: Series[str] = pa.Field(coerce=True)
+        positions = selected["__row"].to_list()
+
+        segments = [
+            self.segments[i]
+            for i in positions
+        ]
+
+        selected = selected.drop("__row")
+
+        return RecordingData(
+            segments=segments,
+            trials=Trials.validate(selected),
+        )
+
+    def select_channels(self, channels: list[int] | list[str]) -> RecordingData:
+        names = self.channel_names
+        idx = (
+            [names.index(c) for c in channels]
+            if channels and isinstance(channels[0], str)
+            else list(channels)
+        )
+
+        segments = []
+        for seg in self.segments:
+            sig = seg.analogsignals[0]
+            signal = sig.duplicate_with_new_data(np.asarray(sig.magnitude)[:, idx])
+            signal.array_annotations = {
+                key: np.asarray(value)[idx]
+                for key, value in sig.array_annotations.items()
+            }
+            segments.append(self._clone_segment(seg, signal))
+
+        return RecordingData(segments=segments, trials=self.trials)
+
+    @classmethod
+    def concat(cls, items: list[RecordingData]) -> RecordingData:
+        segments = [seg for item in items for seg in item.segments]
+        trials = pl.concat([item.trials for item in items], how="vertical").with_columns(
+            trial_index=pl.int_range(pl.len())
+        )
+        return cls(segments=segments, trials=Trials.validate(trials))
+
+    @property
+    def sampling_rate(self) -> pq.Quantity:
+        return self.segments[0].analogsignals[0].sampling_rate
+
+    @property
+    def channel_names(self) -> list[str]:
+        signal = self.segments[0].analogsignals[0]
+        names = signal.array_annotations.get("channel_name")
+        return names.tolist() if names is not None else []
+
+    @property
+    def shape(self) -> tuple[int, int, int]:
+        return self.values().shape # (n_trials, n_samples, n_channels)
+
+    @property
+    def duration(self) -> pq.Quantity:
+        signal = self.segments[0].analogsignals[0]
+        return signal.t_stop - signal.t_start
+
+    @property
+    def value_unit(self) -> pq.Quantity:
+        return self.segments[0].analogsignals[0].dimensionality
+
+    @property
+    def time_unit(self) -> pq.Quantity:
+        return self.segments[0].analogsignals[0].times.dimensionality
+    
+
+class BaseResult(pa.DataFrameModel):
+    file_origin: Series[str]
+    channel: Series[ChannelTypes]
+    stimulus: Series[StimulusTypes]
+
+    class Config: 
+        strict = False
+        dtype = "object"
+
+class TruthData(BaseResult):
     feature: Series[str]
     detected: Series[bool]
 
-class TracePlot(BaseModel):
-    id: str
-    channel: int
-    features: Optional[list[str]] = None
-    stimuli: list[str]
-    annotated: bool = False
-    rc_params: Optional[dict[str, Any]] = None
-
-    @model_validator(mode="after")
-    def annotated_check(self) -> TracePlot:
-        if self.annotated and self.features is None:
-            raise ValueError(
-                "If 'annotated' is True, then 'features' cannot be empty."
-            )
-        return self
-
-class MultiChannelPlot(BaseModel):
-    id: str
-    channels: list[int]
-    stimuli: list[str]
-    rc_params: Optional[dict[str, Any]] = None
-
-class IOPlot(BaseModel):
-    channel: int
-    features: list[str]
-    stimuli: list[str]
-    rc_params: Optional[dict[str, Any]] = None
-
-class FitPlot(BaseModel):
-    id: str
-    channel: int
-    features: list[str]
-    stimulus: str
-    rc_params: Optional[dict[str, Any]] = None
-
-class DetectedPlot(BaseModel):
-    features: list[str]
-    channel: int
-    rc_params: Optional[dict[str, Any]] = None
-
-class AllFilesPlot(BaseModel):
-    stimuli: list[str]
-    output_path: Optional[str] = None
-    max_per_page: Optional[int] = None
-    rc_params: Optional[dict[str, Any]] = None
-
-
-PlotConfig = (
-    TracePlot
-    | MultiChannelPlot
-    | IOPlot
-    | FitPlot
-    | DetectedPlot
-    | AllFilesPlot
-)
-
-PlotType = Literal["io", "trace", "multichannel", "fit", "detected", "allfiles"]
-
-class Plotting(BaseModel):
-    plots: Optional[dict[PlotType, PlotConfig | list[PlotConfig]]] = None
-
-    @staticmethod
-    def coerce_stimulus_fields(v: Any) -> Any:
-        if not isinstance(v, dict):
-            return v
-        v = dict(v)
-        if "stimulus" in v and isinstance(v["stimulus"], (int, float)):
-            v["stimulus"] = str(v["stimulus"])
-        if "stimuli" in v and isinstance(v["stimuli"], list):
-            if any(isinstance(i, (int, float)) for i in v["stimuli"]):
-                v["stimuli"] = list(map(str, v["stimuli"]))
-        return v
-
-    @model_validator(mode="before")
-    @classmethod
-    def dispatch_plot_type(cls, data: Any) -> Any:
-        classes = {"trace": TracePlot, "multichannel": MultiChannelPlot, "io": IOPlot, "fit": FitPlot, "detected": DetectedPlot, "allfiles": AllFilesPlot}
-        if isinstance(data, dict) and isinstance(data.get("plots"), dict):
-            resolved = {}
-            for k, v in data["plots"].items():
-                entries = v if isinstance(v, list) else [v]
-                resolved[k] = [
-                    classes[k].model_validate(cls.coerce_stimulus_fields(entry))
-                    for entry in entries
-                ]
-            data["plots"] = resolved
-        return data
-
-class RecordingConfig(BaseModel):
-    experiment: Experiment
-    metadata: Metadata
-    analysis: Analysis
-    plotting: Optional[Plotting] = None
-
-class IntermediateResult(pa.DataFrameModel):
-    id: Series[str]
-    channel: Series[pl.Int32]
-    time: Series[Annotated[pl.List, pl.Float32()]]
-    value: Series[Annotated[pl.List, pl.Float32()]]
-    stimulus: Series[str]
-
-class FitResult(pa.DataFrameModel):
-    id: Series[str] 
-    channel: Series[int]
-    stimulus: Series[str]
-    feature_time: Series[float] 
-    amplitude: Series[float]
-    corr: Series[float] = pa.Field(nullable=True)
-    r2: Series[float] = pa.Field(nullable=True)
-    detected: Series[bool]
-
-class FeatureResult(BaseModel):
+class BaseAlgorithm(BaseModel, ABC):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    window: tuple[float, float]
-    search_window: tuple[float, float] | float
-    slope_transform: bool
-    snr_threshold: float
-    r2_threshold: float
-    template: np.ndarray 
-    template_keys: list[tuple]
-    result: DataFrame[FitResult]
 
-    @field_validator("template", mode="before")
+    @abstractmethod
+    def match(self, recording: RecordingData) -> AlgorithmResult:
+        ...
+
+    @abstractmethod
+    def detect(self, result: pl.DataFrame, threshold: float) -> pl.DataFrame:
+        ...
+
+class AlgorithmResult(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    algorithm: BaseAlgorithm
+    result: pl.DataFrame
+
+    @field_serializer("algorithm")
+    def serialize_algorithm(
+        self,
+        algorithm: BaseAlgorithm,
+    ) -> dict[str, Any]:
+        data = algorithm.model_dump()
+
+        for key, value in data.items():
+            if isinstance(value, np.ndarray):
+                data[key] = value.tolist()
+
+        return {
+            "method": type(algorithm).__name__,
+            **data,
+        }
+
+    @field_validator("algorithm", mode="before")
     @classmethod
-    def parse_template(cls, v):
-        if isinstance(v, np.ndarray):
-            return v
-        return np.array(v)
+    def deserialize_algorithm(
+        cls,
+        value,
+    ):
+        if isinstance(value, dict):
+            from evoked.algorithms.registry import parse_algorithm
 
-    @field_serializer("template")
-    def serialize_template(self, template: np.ndarray, _info):
-        return template.tolist()
+            return parse_algorithm(value)
+
+        return value
 
     @field_serializer("result")
-    def serialize_result(self, result: pl.DataFrame, _info):
-        return result.to_dicts()
-    
-class RecordingResult(BaseModel):
-    results: dict[str, FeatureResult] = Field(default_factory=dict)
-    def add(self, result_key: str, feature_result: FeatureResult) -> None:
-        self.results[result_key] = feature_result
-    def get(self, result_key: str) -> FeatureResult:
-        return self.results[result_key]
+    def serialize_result(self, value: pl.DataFrame):
+        return value.to_dicts()
 
+    @field_validator("result", mode="before")
+    @classmethod
+    def deserialize_result(cls, value):
+        return pl.DataFrame(value) if isinstance(value, list) else value
+
+RecordingResult = dict[str, AlgorithmResult]

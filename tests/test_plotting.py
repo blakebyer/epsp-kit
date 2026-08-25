@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import pytest
 
-from evoked.plotting import plot_all_files, plot_detected, plot_fit, plot_multichannel, plot_trace, plot_io_curve
+from evoked.visualization import plot_all_files, plot_detected, plot_fit, plot_multichannel, plot_trace, plot_io_curve
 
 
 def test_plot_trace_annotated_draws_feature_markers(intermediate, recording_result):

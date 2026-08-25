@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import argparse
 import xlsxwriter
 import os
@@ -15,17 +16,8 @@ def load_truth(truth_path: str):
         raise FileNotFoundError(
             f"Truth data not found at {truth_path}"
         )
-    ext = os.path.splitext(truth_path)[1].lower()
-    if ext == ".csv":
-        truth_data = pl.read_csv(truth_path)
-    elif ext == ".tsv":
-        truth_data = pl.read_csv(truth_path, separator="\t")
-    elif ext == ".xlsx":
-        truth_data = pl.read_excel(truth_path)  # defaults to loading first sheet
-    else:
-        raise ValueError(f"File extension must be one of: .csv, .tsv, or .xlsx (got {ext})")
         
-    return TruthData.validate(truth_data)
+    return TruthData.validate(pl.read_csv(truth_path, separator="\t"))
 
 MetricType = Literal["f1", "accuracy", "precision", "recall", "balanced accuracy"]
 def calibrate(
@@ -33,7 +25,7 @@ def calibrate(
         pred: RecordingResult, 
         feature: str,
         metric: MetricType):
-    key_cols = ["id", "channel", "stimulus"]
+    key_cols = ["file_origin", "channel", "stimulus"]
     pred = pred.get(feature).result.sort(key_cols).drop("detected")
     truth = truth.filter(pl.col("feature") == feature).sort(key_cols)
     
@@ -46,11 +38,11 @@ def calibrate(
             f"truth row on {key_cols}:\n{missing.select(key_cols)}"
         )
     
-    y_true = joined['detected'].cast(pl.Int32).to_numpy()
+    y_true = joined['detected'].to_numpy()
     metrics = []
     r2_thresholds = np.linspace(0, 1, 50)
     for t in r2_thresholds:
-        y_pred = (joined['r2'] >= t).cast(pl.Int32).to_numpy()
+        y_pred = (joined['r2'] >= t).to_numpy()
         if metric == "f1":
             metrics.append(f1_score(y_true, y_pred, zero_division=0))
         elif metric == "accuracy":
@@ -91,7 +83,7 @@ def main():
     parser.add_argument("--truth", metavar="PATH", help="Path to truth labels in tabular format")
     parser.add_argument("--pred", metavar="PATH", help="Path to recording results in Excel or JSON format")
     parser.add_argument("--metric", metavar="str", default="balanced accuracy", help="Metric on which to base the calibration (default: balanced accuracy)")
-    parser.add_argument("--output", metavar="PATH", help="Path to save calibration results into")
+    parser.add_argument("--output", metavar="PATH", help="Path to save calibration results to as XLSX")
     args = parser.parse_args()
 
     if not args.truth or not args.pred:

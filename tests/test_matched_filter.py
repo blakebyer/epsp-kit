@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from evoked.matched_filter import (
+from evoked.algorithms.linear import (
     build_template,
     center_signal,
     estimate_scale,

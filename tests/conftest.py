@@ -1,6 +1,3 @@
-import matplotlib
-matplotlib.use("Agg")
-
 import numpy as np
 import polars as pl
 import polars_config_meta

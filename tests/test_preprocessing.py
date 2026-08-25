@@ -13,7 +13,7 @@ from evoked.preprocessing import (
     baseline_correct,
     detect_stim_artifact,
     preprocess,
-    remove_stim_artifact,
+    remove_artifacts,
 )
 
 FS = 1000.0
@@ -191,7 +191,7 @@ def test_detect_stim_artifact(stim_artifact, expected):
 
 def test_detect_stim_artifact_on_recording_rows(recording):
     # every row carries the same biphasic blip at idx 6/7, so with
-    # remove_stim_artifact's default params it should resolve to the same
+    # remove_artifacts's default params it should resolve to the same
     # window on every row
     for value in values(recording):
         windows = detect_stim_artifact(
@@ -202,8 +202,8 @@ def test_detect_stim_artifact_on_recording_rows(recording):
 
 
 @pytest.mark.parametrize("artifact", ["zero", "interp"])
-def test_remove_stim_artifact_zero_interp(recording, artifact):
-    cleaned = remove_stim_artifact(recording, artifact=artifact)
+def test_remove_artifacts_zero_interp(recording, artifact):
+    cleaned = remove_artifacts(recording, artifact=artifact)
     raw = values(recording)
     out = values(cleaned)
     start, stop = 5, 10
@@ -222,12 +222,12 @@ def test_remove_stim_artifact_zero_interp(recording, artifact):
     np.testing.assert_allclose(out[:, outside], raw[:, outside])
 
 
-def test_remove_stim_artifact_none_is_noop(recording):
-    assert_frame_equal(remove_stim_artifact(recording, artifact="none"), recording)
+def test_remove_artifacts_none_is_noop(recording):
+    assert_frame_equal(remove_artifacts(recording, artifact="none"), recording)
 
 
-def test_remove_stim_artifact_template(recording):
-    cleaned = remove_stim_artifact(recording, artifact="template")
+def test_remove_artifacts_template(recording):
+    cleaned = remove_artifacts(recording, artifact="template")
     raw = values(recording)
     out = values(cleaned)
     start, stop = 5, 10
@@ -236,8 +236,8 @@ def test_remove_stim_artifact_template(recording):
     assert np.abs(raw[:, start:stop]).max() == pytest.approx(6.0)
 
 
-def test_remove_stim_artifact_explicit_windows(recording):
-    cleaned = remove_stim_artifact(recording, artifact="zero", artifact_windows=[(0.005, 0.010)])
+def test_remove_artifacts_explicit_windows(recording):
+    cleaned = remove_artifacts(recording, artifact="zero", artifact_windows=[(0.005, 0.010)])
     out = values(cleaned)
     np.testing.assert_allclose(out[:, 5:10], 0.0)
 
