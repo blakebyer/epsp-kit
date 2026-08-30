@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from pandera.typing.polars import DataFrame
-from typing import Any, Optional
+from typing import Any, Optional, Literal, Union, Annotated
 import polars as pl
 import numpy as np
 import quantities as pq
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from abc import ABC, abstractmethod
-from evoked.base import ChannelTypes, StimulusTypes, Selector, RecordingResult, RecordingData
-from evoked.algorithms.linear import center_signal, window_correlation
-from pydantic import model_validator, Field, ConfigDict
+from evoked.base import RecordingResult, RecordingData
+from evoked.template import window_correlation, center_signal
+from pydantic import model_validator, field_validator, Field, ConfigDict
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -22,6 +21,7 @@ class BasePlot(BaseModel, ABC):
         arbitrary_types_allowed=True,
         validate_assignment=True,
     )
+    type: str
 
     rc_params: dict[str, Any] | None = None
 
@@ -39,20 +39,38 @@ class BasePlot(BaseModel, ABC):
     def plot(self, *args, **kwargs) -> BasePlot:
         ...
 
-PLOT_TYPES = {
-    "TracePlot": TracePlot,
-    "IOPlot": IOPlot,
-    "FitPlot": FitPlot,
-    "MultiChannelPlot": MultiChannelPlot,
-    "DetectedPlot": DetectedPlot,
-    "AllFilesPlot": AllFilesPlot,
-}
+    @field_validator(
+        "stimulus",
+        "channel",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def coerce_str(cls, value):
+        return str(value)
+
+    @field_validator(
+        "stimuli",
+        "features",
+        "channels",
+        "group_by",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def coerce_list(cls, value):
+        if value is None:
+            return value
+        if isinstance(value, list):
+            return [str(v) for v in value]
+        return [str(value)]
 
 class TracePlot(BasePlot):
+    type: Literal["TracePlot"] = "TracePlot"
     file_origin: str
-    channel: ChannelTypes
-    features: Optional[Selector] = None
-    stimuli: Selector
+    channel: str
+    features: Optional[list[str]] = None
+    stimuli: list[str]
     annotated: bool = False
     stimulus_unit: Optional[str] = ""
 
@@ -69,30 +87,21 @@ class TracePlot(BasePlot):
         recording: RecordingData,
         results: Optional[RecordingResult] = None,
     ) -> TracePlot:
-        features = (
-                [self.features]
-                if isinstance(self.features, str)
-                else list(self.features)
-            )
 
-        ch = (
-            recording.channel_names.index(self.channel)
-            if isinstance(self.channel, str)
-            else self.channel
-            )
+        ch = recording.channel_index(self.channel)
 
         with plt.rc_context(self.rc_params):
             fig, ax = plt.subplots(layout="constrained")
 
             selected = recording.select_trials(
-                id=self.id,
+                file_origin=self.file_origin,
                 stimulus=self.stimuli,
             )
 
             values = selected.values()      # (trials, samples, channels)
             time = selected.times().rescale(pq.s).magnitude
             colors = plt.get_cmap("cividis", len(selected.trials))
-            feature_colors = plt.get_cmap("Accent", len(features))
+            
             for i, trial in enumerate(selected.trials.iter_rows(named=True)):
                 trace = values[i, :, ch]
 
@@ -104,7 +113,8 @@ class TracePlot(BasePlot):
                 )
 
                 if self.annotated:
-                    for j, feature in enumerate(features):
+                    feature_colors = plt.get_cmap("Accent", len(self.features))
+                    for j, feature in enumerate(self.features):
                         data = results[feature].result
 
                         filters = [
@@ -114,7 +124,7 @@ class TracePlot(BasePlot):
                         ]
 
                         data = data.filter(
-                            (pl.col("channel") == ch)
+                            (pl.col("channel") == self.channel)
                             & pl.all_horizontal(filters)
                         )
 
@@ -133,7 +143,7 @@ class TracePlot(BasePlot):
 
                             algorithm = results[feature].algorithm
                             half_width = (
-                                algorithm.template.shape[0]
+                                algorithm.template.template.shape[0]
                                 / recording.sampling_rate.rescale(pq.Hz).magnitude
                                 / 2
                             )
@@ -151,7 +161,7 @@ class TracePlot(BasePlot):
                                 color=feature_colors(j),
                             )
 
-            ax.set_title(f"id={self.id}, channel={ch}", fontweight="bold")
+            ax.set_title(f"{self.file_origin}, channel={ch}", fontweight="bold")
             trace_legend = ax.legend(title=f"Stimulus {self.stimulus_unit}", loc="lower right")
             ax.add_artist(trace_legend)
 
@@ -159,7 +169,7 @@ class TracePlot(BasePlot):
                 feature_handles = [
                     Line2D([0], [0], marker="o", linestyle="-", color=feature_colors(j),
                         markeredgecolor="black", label=feature)
-                    for j, feature in enumerate(features)
+                    for j, feature in enumerate(self.features)
                 ]
                 feature_legend = ax.legend(
                     handles=feature_handles, title="Features", loc="lower center"
@@ -175,10 +185,11 @@ class TracePlot(BasePlot):
 
 
 class IOPlot(BasePlot):
-    channel: ChannelTypes
-    features: Selector
-    stimuli: Selector
-    group_by: Optional[Selector] = None
+    type: Literal["IOPlot"] = "IOPlot"
+    channel: str
+    features: list[str]
+    stimuli: list[str]
+    group_by: Optional[list[str]] = None
     stimulus_unit: Optional[str] = ""
 
     def plot(
@@ -187,54 +198,26 @@ class IOPlot(BasePlot):
         results: RecordingResult,
     ) -> IOPlot:
 
-        features = (
-            [self.features]
-            if isinstance(self.features, str)
-            else list(self.features)
-        )
-
-        groups = (
-            []
-            if self.group_by is None
-            else [self.group_by]
-            if isinstance(self.group_by, str)
-            else list(self.group_by)
-        )
-
-        stimuli = (
-            [self.stimuli]
-            if not isinstance(self.stimuli, (list, tuple))
-            else list(self.stimuli)
-        )
-
         with plt.rc_context(self.rc_params):
             fig, axes = plt.subplots(
-                ncols=len(features),
+                ncols=len(self.features),
                 squeeze=False,
                 layout="constrained",
             )
 
             axes = axes.ravel()
 
-            for ax, feature in zip(axes, features):
+            for ax, feature in zip(axes, self.features):
                 data = results[feature].result
-
+                algorithm = results[feature].algorithm
                 data = data.filter(
                     (pl.col("channel") == self.channel)
-                    & pl.col("stimulus").is_in(stimuli)
+                    & pl.col("stimulus").is_in(self.stimuli)
                 )
 
-                if groups:
-                    data = data.join(
-                        recording.trials.select(
-                            ["trial_index", *groups]
-                        ),
-                        on="trial_index",
-                        how="left",
-                    )
-
+                if self.group_by:
                     grouped = data.group_by(
-                        groups,
+                        self.group_by,
                         maintain_order=True,
                     )
                 else:
@@ -265,11 +248,11 @@ class IOPlot(BasePlot):
                     )
 
                     label = None
-                    if groups:
+                    if self.group_by:
                         key = key if isinstance(key, tuple) else (key,)
                         label = ", ".join(
                             f"{name}={value}"
-                            for name, value in zip(groups, key)
+                            for name, value in zip(self.group_by, key)
                         )
 
                     ax.errorbar(
@@ -279,13 +262,19 @@ class IOPlot(BasePlot):
                         marker="o",
                         label=label,
                     )
+                y_label = f"Slope ({recording.value_unit}/{recording.time_unit})" if algorithm.derivative_transform else f"Amplitude ({recording.value_unit})"
+                ax.set_title(feature)
+                ax.set_xlabel(f"Stimulus ({self.stimulus_unit})")
+                ax.set_ylabel(y_label)
 
-                ax.set_title(str(feature))
-                ax.set_xlabel(f"Stimulus {self.stimulus_unit}")
-                ax.set_ylabel("Amplitude")
-
-                if groups:
-                    ax.legend()
+            handles, labels = axes[0].get_legend_handles_labels()
+            if labels:
+                fig.legend(
+                    handles,
+                    labels,
+                    loc="outside lower center",
+                    ncol=len(labels)
+                )
 
             self.figure = fig
             self.ax = axes
@@ -294,23 +283,37 @@ class IOPlot(BasePlot):
 
 
 class MultiChannelPlot(BasePlot):
+    type: Literal["MultiChannelPlot"] = "MultiChannelPlot"
     file_origin: str
-    channels: Selector
-    stimuli: Selector
+    channels: list[str]
+    stimuli: list[str]
     trial: int
 
     def plot(self, recording: RecordingData) -> MultiChannelPlot:
+        fig, axes = plt.subplots(
+                        nrows=len(self.channels),
+                        squeeze=False,
+                        layout="constrained",
+                    )
+        
+        axes = axes.ravel()
+
         with plt.rc_context(self.rc_params):
             selected = recording.select_trials(
-                        id=self.id,
+                        file_origin=self.file_origin,
                         stimulus=self.stimuli,
-                    ).select_channels(self.channels).select_trials()
+                    ).select_channels(self.channels)
 
             values = selected.values()      # (trials, samples, channels)
             time = selected.times().rescale(pq.s).magnitude
 
-            for i, trial in enumerate(selected.trials.iter_rows(named=True)):
-                    trace = values[trial, :, :]
+            for ax, channel in zip(axes, self.channels):
+                ch = recording.channel_index(channel)
+                v = values[self.trial, :, ch]
+
+                ax.plot(time, v, label=f"ch {ch}")
+
+
 
             
 #         intermediate = intermediate.filter(
@@ -361,10 +364,11 @@ class MultiChannelPlot(BasePlot):
 
 
 class FitPlot(BasePlot):
+    type: Literal["FitPlot"] = "FitPlot"
     file_origin: str
-    channel: ChannelTypes
-    features: Selector
-    stimulus: StimulusTypes
+    channel: str
+    features: list[str]
+    stimulus: str
     stimulus_unit: Optional[str] = ""
 
     def plot(
@@ -373,18 +377,7 @@ class FitPlot(BasePlot):
         results: RecordingResult,
     ) -> FitPlot:
 
-        features = (
-            [self.features]
-            if isinstance(self.features, str)
-            else list(self.features)
-        )
-
-        # Results store channel as integer index
-        ch = (
-            recording.channel_names.index(self.channel)
-            if isinstance(self.channel, str)
-            else self.channel
-        )
+        ch = recording.channel_index(self.channel)   
 
         selected = recording.select_trials(
             file_origin=self.file_origin,
@@ -399,15 +392,16 @@ class FitPlot(BasePlot):
 
         with plt.rc_context(self.rc_params):
             fig, axes = plt.subplots(
-                nrows=len(features),
+                figsize=(8, 3.0 * len(self.features)),
+                nrows=len(self.features),
                 ncols=2,
                 squeeze=False,
                 layout="constrained",
             )
 
-            colors = plt.get_cmap("Accent", len(features))
+            colors = plt.get_cmap("Accent", len(self.features))
 
-            for i, feature in enumerate(features):
+            for i, feature in enumerate(self.features):
                 ax_fit, ax_corr = axes[i]
 
                 result = results[feature]
@@ -415,7 +409,7 @@ class FitPlot(BasePlot):
 
                 data = result.result.filter(
                     (pl.col("file_origin") == self.file_origin)
-                    & (pl.col("channel") == ch)
+                    & (pl.col("channel") == self.channel)
                     & (pl.col("stimulus") == self.stimulus)
                 )
 
@@ -427,26 +421,30 @@ class FitPlot(BasePlot):
                 row = data.row(0, named=True)
 
                 # template is (n_samples, n_channels)
-                template = algorithm.template[:, ch]
+                template = algorithm.template.template[:, ch]
+                window = algorithm.template.window
 
                 # Reconstruct the exact search window used by MatchedFilter
                 search = (
                     algorithm.search_window
                     if isinstance(algorithm.search_window, tuple)
                     else (
-                        algorithm.window[0]
-                        - (algorithm.window[1] - algorithm.window[0])
+                        window[0]
+                        - (window[1] - window[0])
                         * algorithm.search_window,
-                        algorithm.window[1]
-                        + (algorithm.window[1] - algorithm.window[0])
+                        window[1]
+                        + (window[1] - window[0])
                         * algorithm.search_window,
                     )
                 )
 
                 signal = selected.values(search)[0, :, 0]
 
-                if algorithm.slope_transform:
-                    signal = np.gradient(signal)
+                dt = 1 / recording.sampling_rate.rescale(pq.Hz).magnitude
+
+                if algorithm.derivative_transform:
+                    signal = np.gradient(signal, dt)
+                    template = np.gradient(template, dt)
 
                 time = (
                     selected.times(search)
@@ -517,15 +515,22 @@ class FitPlot(BasePlot):
                     zorder=3,
                 )
 
-                value_unit = (
-                    f"{recording.value_unit}/{recording.time_unit}"
-                    if algorithm.slope_transform
-                    else f"{recording.value_unit}"
+                ax_corr.axvline(
+                    latency,
+                    color=colors(i),
+                    linestyle="--",
+                    linewidth=1.0,
                 )
 
-                ax_fit.set_title(str(feature))
+                y_label = (
+                    f"Slope ({recording.value_unit}/{recording.time_unit})"
+                    if algorithm.derivative_transform
+                    else f"Amplitude ({recording.value_unit})"
+                )
+
+                ax_fit.set_title(feature)
                 ax_fit.set_xlabel("Time (s)")
-                ax_fit.set_ylabel(value_unit)
+                ax_fit.set_ylabel(y_label)
                 ax_fit.legend()
 
                 ax_corr.set_xlabel("Time (s)")
@@ -533,7 +538,8 @@ class FitPlot(BasePlot):
 
             fig.suptitle(
                 f"{self.file_origin}, channel={self.channel}, "
-                f"stimulus={self.stimulus} {self.stimulus_unit}"
+                f"stimulus={self.stimulus} {self.stimulus_unit}",
+                fontweight="bold"
             )
 
         self.figure = fig
@@ -563,53 +569,72 @@ class FitPlot(BasePlot):
                 
 
 class DetectedPlot(BasePlot):
-    features: Selector
-    channel: ChannelTypes
+    type: Literal["DetectedPlot"] = "DetectedPlot"
+    features: list[str]
+    channel: str
+    group_by: Optional[list[str]] = None
     stimulus_unit: Optional[str] = ""
 
     def plot(self, results: RecordingResult) -> DetectedPlot:
-        features = (
-                    [self.features]
-                    if isinstance(self.features, str)
-                    else self.features
-                )
 
         with plt.rc_context(self.rc_params):
-            fig, ax = plt.subplots()
-
-            colors = plt.get_cmap("Accent", len(features))
+            fig, ax = plt.subplots(layout="constrained")
             
-            for i, feature in enumerate(features):
+            for feature in self.features:
                 data = results[feature].result
-                
-                detection = data.filter(pl.col("channel")==self.channel)
-                stats = (
-                    detection
-                    .group_by("stimulus")
-                    .agg(
-                        (pl.col("detected").mean() * 100).alias("percent_detected")
-                    )
-                ).sort("stimulus")
-                
-                try:
-                    stats = stats.with_columns(pl.col("stimulus").cast(pl.Float32))
-                except pl.exceptions.InvalidOperationError:
-                    pass
 
-                stats = stats.sort("stimulus")
+                if self.group_by:
+                    grouped = data.group_by(
+                        self.group_by,
+                        maintain_order=True,
+                    )
+                else:
+                    grouped = [(None, data)]
+
+                for key, group in grouped:
+                    try:
+                        group = group.with_columns(
+                            pl.col("stimulus").cast(pl.Float64)
+                        )
+                    except pl.exceptions.InvalidOperationError:
+                        pass
                 
-                ax.plot(
-                    stats["stimulus"].to_numpy(), 
-                    stats["percent_detected"].to_numpy(),
-                    marker="o", 
-                    label=feature,
-                    color=colors(i),
-                )
+                    detection = group.filter(pl.col("channel")==self.channel)
+                    stats = (
+                        detection
+                        .group_by("stimulus")
+                        .agg(
+                            (pl.col("detected").mean() * 100).alias("percent_detected")
+                        )
+                    ).sort("stimulus")
+
+                    label = None
+                    if self.group_by:
+                        key = key if isinstance(key, tuple) else (key,)
+                        group_label = ", ".join(
+                            f"{name}={value}"
+                            for name, value in zip(self.group_by, key)
+                        )
+                        label = f"{feature}, {group_label}"
+                    
+                    ax.plot(
+                        stats["stimulus"].to_numpy(), 
+                        stats["percent_detected"].to_numpy(),
+                        marker="o", 
+                        label=label,
+                    )
+
+            handles, labels = ax.get_legend_handles_labels()
+            fig.legend(
+                handles,
+                labels,
+                loc="outside lower center",
+                ncol=len(self.features)
+            )
                 
             ax.set_xlabel(f"Stimulus ({self.stimulus_unit})")
             ax.set_ylabel("Detected (%)")
             ax.set_ylim(-5, 105)
-            ax.legend(title="Features")
             ax.set_title("Feature Detection")
 
             self.figure = fig
@@ -618,10 +643,10 @@ class DetectedPlot(BasePlot):
         return self
 
 class AllFilesPlot(BasePlot):
-    stimuli: Selector
+    type: Literal["AllFilesPlot"] = "AllFilesPlot"
+    stimuli: list[str]
     output_path: Optional[str] = None
     max_per_page: Optional[int] = None
-    rc_params: Optional[dict[str, Any]] = None
 
 
 # PlotConfig = (
@@ -652,7 +677,7 @@ class AllFilesPlot(BasePlot):
 #             r_result = results.get(feature)
             
 #             rdata = r_result.result
-#             slope_transform = r_result.slope_transform
+#             derivative_transform = r_result.derivative_transform
 #             rdata = rdata.filter((pl.col("stimulus").is_in(stimuli)) & (pl.col("channel")==channel))
 
 #             stats = rdata.group_by("stimulus").agg(
@@ -676,7 +701,7 @@ class AllFilesPlot(BasePlot):
 #                 color=color_val,
 #                 capsize=3
 #             )
-#             if slope_transform: axes[i].set_ylabel(f'Slope ({rdata.config_meta.get_metadata().get("value_unit")}/{rdata.config_meta.get_metadata().get("time_unit")})') 
+#             if derivative_transform: axes[i].set_ylabel(f'Slope ({rdata.config_meta.get_metadata().get("value_unit")}/{rdata.config_meta.get_metadata().get("time_unit")})') 
 #             else: axes[i].set_ylabel(f'Amplitude ({rdata.config_meta.get_metadata().get("value_unit")})')
 #             axes[i].set_xlabel(f'Stimulus ({rdata.config_meta.get_metadata().get("stimulus_unit")})')
 #             axes[i].set_title(feature)
@@ -876,7 +901,7 @@ class AllFilesPlot(BasePlot):
 #             feature_result = results.get(feature)
 #             color = cmap(i / max(1, len(features) - 1))
 #             signal = raw_signal.copy()
-#             if feature_result.slope_transform:
+#             if feature_result.derivative_transform:
 #                 signal = np.gradient(signal, time)
 
 #             template = np.asarray(feature_result.template, dtype=float).ravel()
@@ -947,7 +972,7 @@ class AllFilesPlot(BasePlot):
 #             ax_fit.axvline(best_time, color=color, linestyle="--", linewidth=1.0)
 #             y_unit = (
 #                 f"{value_unit}/{time_unit}"
-#                 if feature_result.slope_transform
+#                 if feature_result.derivative_transform
 #                 else str(value_unit)
 #             )
 #             ax_fit.set_title(feature)
@@ -1103,3 +1128,8 @@ class AllFilesPlot(BasePlot):
 
 #             pdf.savefig(master_fig, bbox_inches="tight")
 #             plt.close(master_fig)
+
+PlotType = Annotated[
+    Union[TracePlot, IOPlot, DetectedPlot, FitPlot, AllFilesPlot, MultiChannelPlot],
+    Field(discriminator="type"),
+]

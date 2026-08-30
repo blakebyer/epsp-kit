@@ -91,7 +91,7 @@ def test_estimate_snr_amplitude_mode():
     signal = np.array([0.0, 5.0, 0.0])
     noise = np.array([0.0, 0.01, -0.01, 0.02, -0.02])
     sigma, snr = estimate_snr(
-        TIME[:3], signal, slope_transform=False, noise=noise, return_sigma=True
+        TIME[:3], signal, derivative_transform=False, noise=noise, return_sigma=True
     )
     mad = np.median(np.abs(noise - np.median(noise)))
     expected_sigma = 1.4826 * mad
@@ -108,7 +108,7 @@ def test_estimate_snr_slope_mode():
         -0.01, 0.02, 0.00, -0.01, 0.01,
         0.00, 0.02, -0.01, 0.00, 0.01,
     ])
-    sigma, snr = estimate_snr(t, signal, slope_transform=True, return_sigma=True)
+    sigma, snr = estimate_snr(t, signal, derivative_transform=True, return_sigma=True)
     assert sigma > 0
     assert snr > 10
 

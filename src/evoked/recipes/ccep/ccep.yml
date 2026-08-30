@@ -12,18 +12,16 @@ metadata:
       id: patient 31
       stimulus: [41]
       repeats: 440
-#     sub-ccepAgeUMCU68_ses-1_task-SPESclin_run-011603_ieeg.vhdr:
-#       id: patient 68
-#       stimulus: [7]
-#       repeats: 390
-#     sub-ccepAgeUMCU50_ses-1_task-SPESclin_run-021222_ieeg.vhdr:
-#       id: patient 50
-#       stimulus: [6]
-#       repeats: 480
+    sub-ccepAgeUMCU68_ses-1_task-SPESclin_run-011603_ieeg.vhdr:
+      id: patient 68
+      stimulus: [7]
+      repeats: 390
+    sub-ccepAgeUMCU50_ses-1_task-SPESclin_run-021222_ieeg.vhdr:
+      id: patient 50
+      stimulus: [6]
+      repeats: 480
 analysis:
-  default:
-    noise_window: [0.5, 0.75]
-  epoch: [0.0, 1.0]
+  epoch: [0.0, 0.5]
   features:
     N1:
       window: [10e-3, 50e-3]

@@ -3,7 +3,7 @@ import polars as pl
 import pytest
 
 from evoked.results import RecordingResult
-from evoked.cli.calibration import calibrate, calibrate_all, load_truth
+from evoked.cli.calibrate import calibrate, calibrate_all, load_truth
 
 
 def _pred():
@@ -19,7 +19,7 @@ def _pred():
     })
     result = RecordingResult()
     result.add("fEPSP", FeatureResult(
-        window=(0.0, 0.01), search_window=0.25, slope_transform=False,
+        window=(0.0, 0.01), search_window=0.25, derivative_transform=False,
         snr_threshold=2.0, r2_threshold=0.5, template=np.zeros(5),
         template_keys=[], result=df,
     ))
@@ -72,7 +72,7 @@ def _pred_with_two_features():
     result = RecordingResult()
     for name in ("fEPSP", "Population spike"):
         result.add(name, FeatureResult(
-            window=(0.0, 0.01), search_window=0.25, slope_transform=False,
+            window=(0.0, 0.01), search_window=0.25, derivative_transform=False,
             snr_threshold=2.0, r2_threshold=0.5, template=np.zeros(5),
             template_keys=[], result=make_df(),
         ))

@@ -61,7 +61,7 @@ def feature_result():
     return FeatureResult(
         window=(0.012, 0.018),
         search_window=(0.010, 0.022),
-        slope_transform=False,
+        derivative_transform=False,
         snr_threshold=2.0,
         r2_threshold=0.5,
         template=np.hanning(6),

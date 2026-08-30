@@ -32,7 +32,7 @@ def test_plot_trace_annotated_warns_when_feature_not_detected_for_stimulus(inter
         "detected": [True, True, True],
     })
     feature_result = FeatureResult(
-        window=(0.012, 0.018), search_window=(0.010, 0.022), slope_transform=False,
+        window=(0.012, 0.018), search_window=(0.010, 0.022), derivative_transform=False,
         snr_threshold=2.0, r2_threshold=0.5, template=np.hanning(6),
         template_keys=[], result=df,
     )

@@ -22,18 +22,19 @@ neo = "^0.14.5"
 polars-config-meta = {extras = ["polars"], version = "^0.3.4"}
 mne-bids = "^0.19.0"
 mne = "^1.12.1"
-nicegui = "^3.15.0"
 scikit-learn = "^1.9.0"
 pytest = "^9.1.1"
 pytest-cov = "^7.1.0"
 dtaidistance = "^2.4.0"
 ephyviewer = "^1.8.0"
 pyside6 = "^6.11.2"
+pyyaml = "^6.0.3"
+statsmodels = "^0.15.0"
 
 [project.scripts]
-evoked-analysis = "evoked.analysis:main"
-evoked-calibration = "evoked.calibration:main"
-evoked-app = "evoked.app:main"
+evoked-analyze = "evoked.cli.analyze:main"
+evoked-calibrate = "evoked.cli.calibrate:main"
+evoked-app = "evoked.cli.app:main"
 
 [project.urls]
 repository = "https://github.com/blakebyer/evoked"

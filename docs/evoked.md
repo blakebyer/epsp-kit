@@ -61,7 +61,7 @@ analysis:  # required
       window: <tuple[number, number]>  # required
       noise_window: <tuple[number, number]>  # required
       search_window: <tuple[number, number] | number>  # optional
-      slope_transform: <boolean>  # optional
+      derivative_transform: <boolean>  # optional
       snr_threshold: <number>  # optional
       r2_threshold: <number>  # optional
 plotting:  # optional

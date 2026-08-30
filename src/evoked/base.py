@@ -2,31 +2,28 @@ from __future__ import annotations
 
 import neo
 import numpy as np
-from typing import Any, Optional, Union, Callable
-from pydantic import BaseModel, ConfigDict, field_validator, field_serializer
+from typing import Optional, Callable
+from pydantic import BaseModel, ConfigDict, field_validator, field_serializer, SerializeAsAny, TypeAdapter
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import polars as pl
 import pandera.polars as pa
 import quantities as pq
-from pandera.typing.polars import Series
+from pandera.typing.polars import Series, DataFrame
 
 
-ChannelTypes = Union[int, str]
-StimulusTypes = Union[str, int, float]
-Selector = Union[list, str, tuple]
 
 class Trials(pa.DataFrameModel):
-    trial_index: Series[int]
+    trial_index: Series[int] 
     file_origin: Series[str]
-    stimulus: Series[StimulusTypes] = pa.Field(nullable=True, coerce=True)
+    stimulus: Series[str] = pa.Field(coerce=True)
 
     class Config: 
         strict = False # as many groups as the user wants
-        dtype = "object"
 
     @pa.dataframe_check
-    def trial_index_is_unique(cls, df: pl.DataFrame) -> bool:
+    def trial_index_is_unique(cls, data) -> bool:
+        df = data.lazyframe.collect()
         return df["trial_index"].n_unique() == df.height
 
 class TrialCountMismatch(ValueError):
@@ -35,7 +32,7 @@ class TrialCountMismatch(ValueError):
 @dataclass
 class RecordingData:
     segments: list[neo.Segment]
-    trials: Trials
+    trials: pl.DataFrame
 
     def values(
         self,
@@ -69,6 +66,11 @@ class RecordingData:
 
     @staticmethod
     def _clone_segment(source: neo.Segment, signal) -> neo.Segment:
+        signal.array_annotations = {
+            key: np.asarray(value).copy()
+            for key, value in source.analogsignals[0].array_annotations.items()
+        }
+
         new_seg = neo.Segment(**source.annotations)
         new_seg.analogsignals.append(signal)
         new_seg.events.extend(source.events)
@@ -81,34 +83,6 @@ class RecordingData:
             for i, seg in enumerate(self.segments)
         ]
         return RecordingData(segments=segments, trials=self.trials)
-
-    def average_by(self, by: str | list[str]) -> RecordingData:
-        by = [by] if isinstance(by, str) else by
-        values = self.values()
-
-        trials = self.trials.with_row_index("__row")
-
-        segments = []
-        rows = []
-
-        for key, group in trials.group_by(by, maintain_order=True):
-            positions = group["__row"].to_numpy()
-            mean = values[positions].mean(axis=0)
-
-            first = self.segments[positions[0]]
-            signal = first.analogsignals[0].duplicate_with_new_data(mean)
-            segments.append(self._clone_segment(first, signal))
-
-            key = key if isinstance(key, tuple) else (key,)
-            rows.append({
-                "trial_index": len(rows),
-                **dict(zip(by, key)),
-            })
-
-        return RecordingData(
-            segments=segments,
-            trials=Trials.validate(pl.DataFrame(rows)),
-        )
 
     def select_trials(
         self,
@@ -147,13 +121,8 @@ class RecordingData:
             trials=Trials.validate(selected),
         )
 
-    def select_channels(self, channels: list[int] | list[str]) -> RecordingData:
-        names = self.channel_names
-        idx = (
-            [names.index(c) for c in channels]
-            if channels and isinstance(channels[0], str)
-            else list(channels)
-        )
+    def select_channels(self, channels: list[str]) -> RecordingData:
+        idx = [self.channel_index(channel) for channel in channels]
 
         segments = []
         for seg in self.segments:
@@ -166,6 +135,12 @@ class RecordingData:
             segments.append(self._clone_segment(seg, signal))
 
         return RecordingData(segments=segments, trials=self.trials)
+
+    def channel_index(self, channel: str) -> int:
+        if channel in self.channel_names:
+            return self.channel_names.index(channel)
+
+        raise KeyError(f"Unknown channel: {channel!r}")
 
     @classmethod
     def concat(cls, items: list[RecordingData]) -> RecordingData:
@@ -181,9 +156,19 @@ class RecordingData:
 
     @property
     def channel_names(self) -> list[str]:
-        signal = self.segments[0].analogsignals[0]
-        names = signal.array_annotations.get("channel_name")
-        return names.tolist() if names is not None else []
+        return self.segments[0].analogsignals[0].array_annotations["channel_name"].tolist()
+
+    @property
+    def n_trials(self) -> int:
+        return self.shape[0]
+
+    @property
+    def n_samples(self) -> int:
+        return self.shape[1]
+
+    @property
+    def n_channels(self) -> int:
+        return self.shape[2]
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -205,12 +190,11 @@ class RecordingData:
 
 class BaseResult(pa.DataFrameModel):
     file_origin: Series[str]
-    channel: Series[ChannelTypes]
-    stimulus: Series[StimulusTypes]
+    channel: Series[str] = pa.Field(coerce=True)
+    stimulus: Series[str] = pa.Field(coerce=True)
 
     class Config: 
         strict = False
-        dtype = "object"
 
 class TruthData(BaseResult):
     feature: Series[str]
@@ -218,46 +202,36 @@ class TruthData(BaseResult):
 
 class BaseAlgorithm(BaseModel, ABC):
     model_config = ConfigDict(arbitrary_types_allowed=True)
+    method: str
 
     @abstractmethod
-    def match(self, recording: RecordingData) -> AlgorithmResult:
+    def match(self, recording: RecordingData, results: Optional[RecordingResult] = None) -> AlgorithmResult:
         ...
 
     @abstractmethod
-    def detect(self, result: pl.DataFrame, threshold: float) -> pl.DataFrame:
+    def detect(self, result: pl.DataFrame, threshold: float) -> DataFrame[BaseResult]:
         ...
 
 class AlgorithmResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    algorithm: BaseAlgorithm
-    result: pl.DataFrame
+    algorithm: SerializeAsAny[BaseAlgorithm]
+    template: Optional[np.ndarray] = None
+    result: DataFrame[BaseResult]
 
-    @field_serializer("algorithm")
-    def serialize_algorithm(
-        self,
-        algorithm: BaseAlgorithm,
-    ) -> dict[str, Any]:
-        data = algorithm.model_dump()
-
-        for key, value in data.items():
-            if isinstance(value, np.ndarray):
-                data[key] = value.tolist()
-
-        return {
-            "method": type(algorithm).__name__,
-            **data,
-        }
+    def detect(self, threshold: float) -> AlgorithmResult:
+        return AlgorithmResult(
+            algorithm=self.algorithm,
+            result=self.algorithm.detect(self.result, threshold),
+        )
 
     @field_validator("algorithm", mode="before")
     @classmethod
-    def deserialize_algorithm(
-        cls,
-        value,
-    ):
+    def deserialize_algorithm(cls, value):
         if isinstance(value, dict):
-            from evoked.algorithms.registry import parse_algorithm
+            from evoked.algorithms.registry import AlgorithmType
 
-            return parse_algorithm(value)
+            adapter = TypeAdapter(AlgorithmType)
+            return adapter.validate_python(value)
 
         return value
 
@@ -269,5 +243,14 @@ class AlgorithmResult(BaseModel):
     @classmethod
     def deserialize_result(cls, value):
         return pl.DataFrame(value) if isinstance(value, list) else value
+
+    @field_validator("template", mode="before")
+    @classmethod
+    def _to_array(cls, value):
+        return np.asarray(value) if not isinstance(value, np.ndarray) else value
+    
+    @field_serializer("template")
+    def _serialize_template(self, value: np.ndarray) -> list:
+        return value.tolist()
 
 RecordingResult = dict[str, AlgorithmResult]

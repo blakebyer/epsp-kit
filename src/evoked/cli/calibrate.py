@@ -6,7 +6,7 @@ import os
 import polars as pl
 import numpy as np
 from evoked.base import TruthData, RecordingResult
-from evoked.io import load_results_json, load_results_xlsx
+from evoked.io import _load_results_json, _load_results_xlsx
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, balanced_accuracy_score
 from typing import Literal
 from pandera.typing.polars import DataFrame
@@ -24,9 +24,10 @@ def calibrate(
         truth: DataFrame[TruthData], 
         pred: RecordingResult, 
         feature: str,
+        fit_metric: str,
         metric: MetricType):
     key_cols = ["file_origin", "channel", "stimulus"]
-    pred = pred.get(feature).result.sort(key_cols).drop("detected")
+    pred = pred.get(feature).result.sort(key_cols)
     truth = truth.filter(pl.col("feature") == feature).sort(key_cols)
     
     joined = pred.join(truth, how="left",on=key_cols)
@@ -40,9 +41,9 @@ def calibrate(
     
     y_true = joined['detected'].to_numpy()
     metrics = []
-    r2_thresholds = np.linspace(0, 1, 50)
-    for t in r2_thresholds:
-        y_pred = (joined['r2'] >= t).to_numpy()
+    thresholds = np.linspace(0, 1, 50)
+    for t in thresholds:
+        y_pred = (joined[fit_metric] >= t).to_numpy()
         if metric == "f1":
             metrics.append(f1_score(y_true, y_pred, zero_division=0))
         elif metric == "accuracy":
@@ -57,31 +58,33 @@ def calibrate(
             raise ValueError(f"Metric must be one of: f1, accuracy, precision, recall, balanced accuracy (got {metric})")
 
     best_k = np.nanargmax(metrics)
-    best_r2 = r2_thresholds[best_k]
+    best_threshold = thresholds[best_k]
     best_metric = metrics[best_k]
 
-    print(f"Best R^2 threshold for {feature}={best_r2:.3f} at {metric}={best_metric:.3f}")
+    print(f"Best {fit_metric} threshold for {feature}={best_threshold:.3f} at {metric}={best_metric:.3f}")
     return pl.DataFrame({
-        "r2_thresholds":r2_thresholds,
+        "thresholds":thresholds,
         f"{metric}":metrics,
     })
 
 def calibrate_all(
         truth: DataFrame[TruthData],
         pred: RecordingResult,
+        fit_metric: str,
         metric: MetricType) -> dict[str, pl.DataFrame]:
     results = {}
     for feature in pred.results:
-        results[feature] = calibrate(truth, pred, feature, metric)
+        results[feature] = calibrate(truth, pred, feature, fit_metric, metric)
     return results
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="evoked.calibrate",
+        prog="evoked-calibrate",
         description="Compute hyperparameter calibration based on truth labels.",
     )
-    parser.add_argument("--truth", metavar="PATH", help="Path to truth labels in tabular format")
+    parser.add_argument("--truth", metavar="PATH", help="Path to truth labels in TSV format")
     parser.add_argument("--pred", metavar="PATH", help="Path to recording results in Excel or JSON format")
+    parser.add_argument("--fit-metric", metavar="str", help="Fit metric from the algorithm")
     parser.add_argument("--metric", metavar="str", default="balanced accuracy", help="Metric on which to base the calibration (default: balanced accuracy)")
     parser.add_argument("--output", metavar="PATH", help="Path to save calibration results to as XLSX")
     args = parser.parse_args()
@@ -90,13 +93,14 @@ def main():
         parser.error("--truth and --pred are required")
 
     truth = load_truth(args.truth)
-    pred = load_results_xlsx(args.pred) if os.path.splitext(args.pred)[1] == ".xlsx" else load_results_json(args.pred)
+    pred = _load_results_xlsx(args.pred) if os.path.splitext(args.pred)[1] == ".xlsx" else _load_results_json(args.pred)
 
     if truth is None or pred is None:
         raise ValueError("truth/pred do not exist")
     
     safe_metric = str(args.metric).lower() # metric is case-insensitive, feature is not
-    res = calibrate_all(truth, pred, safe_metric)
+    safe_fit_metric = str(args.fit_metric).lower()
+    res = calibrate_all(truth, pred, safe_fit_metric, safe_metric)
 
     if args.output:
         workbook = xlsxwriter.Workbook(args.output)

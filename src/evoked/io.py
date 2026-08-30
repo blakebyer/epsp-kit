@@ -43,38 +43,8 @@ def resolve_filenames(data_path: str) -> list[str]:
         if path.is_file()
     ]
 
-def downsample_recording(
-    segments: list[neo.Segment],
-    factor: int,
-) -> list[neo.Segment]:
-    """From list of `neo.Segment` use `neo.AnalogSignal.downsample()` to downsample the analogsignals.
 
-    Args:
-        segments (list[neo.Segment]):
-        factor (int): Decimation factor
-
-    Returns:
-        list[neo.Segment]:
-    """
-    if factor <= 1:
-        return segments
-
-    out = []
-
-    for seg in segments:
-        new_seg = neo.Segment(**seg.annotations)
-
-        signal = seg.analogsignals[0].downsample(factor)
-        new_seg.analogsignals.append(signal)
-
-        new_seg.events.extend(seg.events)
-
-        out.append(new_seg)
-
-    return out
-
-
-def load_bids(path: str) -> mne.io.BaseRaw:
+def _load_bids(path: str) -> mne.io.BaseRaw:
     """Loads `mne.io.BaseRaw` from `path`.
 
     Args:
@@ -92,7 +62,7 @@ def load_bids(path: str) -> mne.io.BaseRaw:
     bids_path.update(root=root)
     return mne_bids.read_raw_bids(bids_path, verbose=False)
 
-def load_neo(path: str, block_index: int = 0) -> list[neo.Segment]:
+def _load_neo(path: str, block_index: int = 0) -> list[neo.Segment]:
     """Loads list of `neo.Segment` from `path`, defaulting to the first block.
 
     Args:
@@ -106,7 +76,7 @@ def load_neo(path: str, block_index: int = 0) -> list[neo.Segment]:
     block = reader.read_block(block_index=block_index, lazy=True)
     return block.segments
 
-def crop_mne(
+def _crop_mne(
     raw: mne.io.BaseRaw,
     epoch: Optional[tuple[float, float]] = None,
 ) -> neo.Segment:
@@ -167,7 +137,7 @@ def crop_mne(
 
     return segment
 
-def crop_neo(
+def _crop_neo(
     segment: neo.Segment,
     epoch: Optional[tuple[float, float]] = None,
 ) -> neo.Segment:
@@ -188,15 +158,22 @@ def crop_neo(
     else:
         signal = proxy.load(
             time_slice=(
-                epoch[0] * pq.s,
-                epoch[1] * pq.s,
+                proxy.t_start + epoch[0] * pq.s,
+                proxy.t_start + epoch[1] * pq.s,
             )
         )
+        signal.t_start = epoch[0] * pq.s
+
+    if "channel_name" not in signal.array_annotations:
+        signal.array_annotate(
+            channel_name=np.array([str(i) for i in range(signal.shape[1])])
+        )   
 
     new_segment = neo.Segment(**segment.annotations)
     new_segment.analogsignals.append(signal)
 
     for events in segment.events:
+        events = events.load()
         if epoch is None:
             new_segment.events.append(events)
             continue
@@ -220,7 +197,7 @@ def crop_neo(
 
     return new_segment
 
-def epoch_recording(
+def _epoch_raw(
     data: mne.io.BaseRaw | list[neo.Segment],
     epoch: Optional[tuple[float, float]],
     event_label: Optional[str] = None,
@@ -244,10 +221,10 @@ def epoch_recording(
 
     if event_label is None:
         if isinstance(data, mne.io.BaseRaw):
-            return [crop_mne(data, epoch)]
+            return [_crop_mne(data, epoch)]
 
         return [
-            crop_neo(seg, epoch)
+            _crop_neo(seg, epoch)
             for seg in data
         ]
 
@@ -257,16 +234,16 @@ def epoch_recording(
         )
 
     if isinstance(data, mne.io.BaseRaw):
-        return epoch_mne(data, epoch, event_label)
+        return _epoch_mne(data, epoch, event_label)
 
     return [
         trial
         for seg in data
-        for trial in epoch_neo(seg, epoch, event_label)
+        for trial in _epoch_neo(seg, epoch, event_label)
     ]
 
 
-def epoch_mne(raw: mne.io.BaseRaw, 
+def _epoch_mne(raw: mne.io.BaseRaw, 
               epoch: tuple[float, float], 
               event_label: str) -> list[neo.Segment]:
     """From an `mne.io.BaseRaw` object, epochs around events marked with `event_label` to a list of `neo.Segment`.
@@ -285,6 +262,13 @@ def epoch_mne(raw: mne.io.BaseRaw,
         mask = labels == event_label
         times = times[mask]
         labels = labels[mask]
+
+    if event_label is not None and not np.any(mask):
+        available = sorted(set(labels.tolist()))
+        raise ValueError(
+            f"No events found with label {event_label!r}. "
+            f"Available labels in this file: {available}"
+        )
 
     sfreq, t_start = raw.info["sfreq"], float(raw.first_time)
     n_samples = int(round((epoch[1] - epoch[0]) * sfreq))
@@ -307,7 +291,7 @@ def epoch_mne(raw: mne.io.BaseRaw,
     return trials
 
 
-def epoch_neo(
+def _epoch_neo(
     segment: neo.Segment,
     epoch: tuple[float, float],
     event_label: Optional[str] = None,
@@ -323,13 +307,20 @@ def epoch_neo(
         list[neo.Segment]:
     """
 
-    events = segment.events[0]
+    events = segment.events[0].load()
     times = np.asarray(events.times.rescale(pq.s).magnitude)
     labels = np.asarray(events.labels)
 
     if event_label is not None:
         mask = labels == event_label
         times, labels = times[mask], labels[mask]
+
+    if event_label is not None and not np.any(mask):
+        available = sorted(set(labels.tolist()))
+        raise ValueError(
+            f"No events found with label {event_label!r}. "
+            f"Available labels in this file: {available}"
+        )
 
     proxy = segment.analogsignals[0]
 
@@ -343,6 +334,11 @@ def epoch_neo(
         )
         signal.t_start = epoch[0] * pq.s
         onset = neo.Event(times=np.array([0.0]) * pq.s, labels=np.array([label]))
+        
+        if "channel_name" not in signal.array_annotations:
+            signal.array_annotate(
+                channel_name=np.array([str(i) for i in range(signal.shape[1])])
+            )   
         trial = neo.Segment()
         trial.analogsignals.append(signal)
         trial.events.append(onset)
@@ -350,7 +346,7 @@ def epoch_neo(
 
     return trials
 
-def load_segments(
+def _load_segments(
     filename: str,
     epoch: Optional[tuple[float, float]] = None,
     event_label: Optional[str] = None,
@@ -371,13 +367,13 @@ def load_segments(
     """
 
     try:
-        data = load_bids(filename)
+        data = _load_bids(filename)
         layout = "continuous"
     except (ValueError, StopIteration):
-        data = load_neo(filename)
+        data = _load_neo(filename)
         layout = "segments" if len(data) > 1 else "continuous"
 
-    segments = epoch_recording(
+    segments = _epoch_raw(
         data,
         epoch,
         event_label,
@@ -419,7 +415,7 @@ def load_config(
     
     return RecordingConfig.model_validate(metadata)
 
-def load(
+def _load_files(
     filenames: list[str],
     epoch: Optional[tuple[float, float]] = None,
     event_label: Optional[str] = None,
@@ -442,46 +438,63 @@ def load(
     return [
         segment
         for filename in filenames
-        for segment in load_segments(
+        for segment in _load_segments(
             filename,
             epoch,
             event_label,
         )
     ]
 
-def add_trials(
-    segments: list[neo.Segment],
+
+def load_recording(
+    filenames: list[str],
     trials: str | pl.DataFrame,
+    epoch: Optional[tuple[float, float]] = None,
+    event_label: Optional[str] = None,
 ) -> RecordingData:
-    """Adds trials to `RecordingData` from path to trials table or from `pl.DataFrame`.
+    """Load recording from filenames and attach trial metadata.
+
+    If `epoch` is None, loads full-length files.
+    If `epoch` is set and `event_label` is None, crops/epochs segments.
+    If `epoch` and `event_label` are set, epochs around matching events.
 
     Args:
-        segments (list[neo.Segment]):
-        trials (str | pl.DataFrame):
-
-    Raises:
-        TrialCountMismatch: Number of trials in `trials` must be the same length as `len(list[neo.Segment])`.
+        filenames: Recording files to load.
+        trials: Trial metadata as a TSV path or Polars DataFrame.
+        epoch: Optional epoch window in seconds.
+        event_label: Optional event label used for event-based epoching.
 
     Returns:
-        RecordingData:
+        Loaded recording with validated trial metadata.
     """
+    filenames = sorted(filenames, key=os.path.basename)
+    segments = _load_files(filenames, epoch=epoch, event_label=event_label)
 
     if isinstance(trials, str):
         trials = pl.read_csv(trials, separator="\t")
 
-    if "trial_index" not in trials.columns:
-        trials = trials.with_row_index("trial_index")
+    trials = (
+        trials
+        .sort("file_origin", maintain_order=True)
+        .with_row_index("trial_index")
+        .with_columns(pl.col("trial_index").cast(pl.Int64))
+    )
 
     if len(trials) != len(segments):
         raise TrialCountMismatch(
-            f"{len(segments)} segments but "
-            f"{len(trials)} trial rows."
+            f"{len(segments)} segments but {len(trials)} trial rows."
         )
 
-    return RecordingData(
-        segments=segments,
-        trials=Trials.validate(trials),
-    )
+    expected = sorted({seg.annotations["file_origin"] for seg in segments})
+    actual = sorted(trials["file_origin"].unique().to_list())
+
+    if expected != actual:
+        raise TrialCountMismatch(
+            f"trials.tsv file_origin doesn't match loaded files segment annotations: "
+            f"missing={set(expected) - set(actual)}, extra={set(actual) - set(expected)}"
+        )
+
+    return RecordingData(segments=segments, trials=Trials.validate(trials))
 
 def save_results_json(results: RecordingResult, filepath: str) -> None:
     """Saves `results` to machine-readable JSON.
@@ -499,7 +512,7 @@ def save_results_json(results: RecordingResult, filepath: str) -> None:
         json.dump(data, f, indent=2)
 
 
-def load_results_json(filepath: str) -> RecordingResult:
+def _load_results_json(filepath: str) -> RecordingResult:
     """Loads a `RecordingResult` from JSON.
 
     Args:
@@ -545,7 +558,11 @@ def save_results_xlsx(
         worksheet = workbook.add_worksheet(name[:31])
 
         serialized = ar.model_dump(mode="json")
-        params = serialized["algorithm"]
+
+        params = {
+            **serialized["algorithm"],
+            "template": serialized["template"],
+        }
 
         worksheet.write_row(0, 0, ["parameter", "value"])
 
@@ -609,7 +626,7 @@ def save_results_xlsx(
     workbook.close()
 
 
-def load_results_xlsx(
+def _load_results_xlsx(
     xlsx_path: str,
 ) -> RecordingResult:
     """Reload results as `RecordingResult` from the hidden serialized JSON sheet.

@@ -1,32 +1,17 @@
 from __future__ import annotations
 
-from evoked.algorithms.linear import Peak, MatchedFilter
-from evoked.algorithms.probabilistic import GLRT
-from evoked.algorithms.nonlinear import DTW
+from pydantic import BaseModel, Field
+from typing import Annotated, Union
+from evoked.algorithms.ddt import DDT
+from evoked.algorithms.dtw import DTW
+from evoked.algorithms.matched_filter import MatchedFilter
+from evoked.algorithms.peak import Peak
+from evoked.algorithms.rms import RMS
+
 # from evoked.algorithms.other import OtherAlgo  # add each new algorithm here only
 
+AlgorithmType = Annotated[
+    Union[DDT, DTW, MatchedFilter, Peak, RMS],
+    Field(discriminator="method"),
+]
 
-ALGORITHMS = {
-    "Peak": Peak,
-    "MatchedFilter": MatchedFilter,
-    "GLRT": GLRT,
-    "DTW": DTW,
-}
-
-
-def parse_algorithm(data):
-    if not isinstance(data, dict):
-        return data
-
-    data = dict(data)
-
-    algorithm_type = data.pop("type")
-
-    try:
-        algorithm_class = ALGORITHMS[algorithm_type]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown algorithm type: {algorithm_type}"
-        ) from exc
-
-    return algorithm_class(**data)

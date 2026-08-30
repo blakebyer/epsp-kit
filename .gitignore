@@ -1,5 +1,7 @@
 __pycache__
 .vscode
 .pytest_cache
-src/evoked/tests/__pycache__
-src/evoked/tests/coverage.xml
+tests/__pycache__
+tests/coverage.xml
+src/evoked/recipes/fepsp/fepsp_hidden
+tests/tests_hidden
